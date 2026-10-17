@@ -1,0 +1,11 @@
+node_modules
+dist
+.DS_Store
+*.local
+.claude/
+
+# Assets fuente que el juego publicado no descarga. Las versiones livianas se
+# generan con `npm run optimize:assets` (ver README).
+public/assets/player/*_Meshy_Merged_Animations.fbx
+public/assets/player/Meshy_AI_Blue_Wasteland_Sentin_biped_texture_0*.png
+public/assets/player/* 2.png
