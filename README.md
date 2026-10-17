@@ -8,6 +8,9 @@ postapocalíptica bajo la nevada mortal, reconstruida con **Gaussian splatting**
 Stack: **Three.js 0.186 · TypeScript 6 · Vite 8 · Spark 2.3 (World Labs)** ·
 lil-gui · three-mesh-bvh. Todo WebGL2, corre directo en Chrome.
 
+**Jugalo:** <https://santisiri.github.io/eternauta-online/> (en computadora, con
+teclado y mouse; descarga ~95 MB).
+
 ## Inicio rápido
 
 Requisitos: Node 20+ y un navegador con WebGL2 (Chrome recomendado).
@@ -216,6 +219,30 @@ No está medido en otras GPUs. Palancas disponibles: `render.maxPixelRatio`,
 La carga del SPZ tarda ~6 s extra por construir el LoD en el navegador; se
 puede eliminar precompilando un `.rad` con la herramienta `build-lod` de Spark
 (requiere Rust) y cargándolo con `paged: true`.
+
+## Publicación (GitHub Pages)
+
+Cada push a `main` compila y publica con GitHub Actions
+(`.github/workflows/deploy.yml`) en <https://santisiri.github.io/eternauta-online/>.
+
+- `base: "./"` en Vite + `asset()` en `config.ts`: el build funciona en la raíz o
+  en cualquier subcarpeta (Pages, itch.io…).
+- El repo sólo versiona lo que el juego descarga (~89 MB). Los originales
+  pesados quedan fuera por `.gitignore`; las versiones livianas se regeneran con:
+
+  ```bash
+  npm run optimize:assets
+  ```
+
+  (mapas de rugosidad/metalicidad a 1024 px y el clip `Running` extraído del FBX
+  fusionado a `animations/running.json`, 35 KB en lugar de 17 MB).
+- `.env` define `VITE_SITE_URL`, usada por la tarjeta de X/Open Graph
+  (`public/og.jpg`, 1200×630). Si publicás un fork, cambiala.
+- En celulares (sin mouse) o con ahorro de datos, el juego avisa y espera
+  confirmación antes de descargar.
+- GitHub Pages tiene un límite flexible de 100 GB/mes (≈1.000 visitas a ~95 MB).
+  Si el tráfico crece, el siguiente paso es servir `scene.spz` y el FBX desde
+  Cloudflare R2 (sin costo de egreso) y apuntar `config.assets` ahí.
 
 ## Próximos pasos sugeridos
 
