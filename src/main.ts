@@ -3,7 +3,7 @@
  */
 
 import "./style.css";
-import { loadConfig } from "./config";
+import { applyMobileProfile, loadConfig } from "./config";
 import { Game } from "./Game";
 
 const container = document.getElementById("app");
@@ -19,7 +19,7 @@ function showFatal(message: string): void {
 /** Descarga aproximada del juego publicado (FBX 27,5 MB + SPZ 64,7 MB + extras). */
 const APPROX_DOWNLOAD_MB = 93;
 
-/** Celular/tablet sin mouse: el juego necesita teclado y mouse. */
+/** Celular/tablet sin mouse. */
 function isTouchOnly(): boolean {
   return matchMedia("(pointer: coarse)").matches && !matchMedia("(any-pointer: fine)").matches;
 }
@@ -39,16 +39,18 @@ function hasWebGL2(): boolean {
 if (!hasWebGL2()) {
   showFatal("Este navegador no soporta WebGL2, necesario para Spark (Gaussian splatting). Probá con Chrome actualizado.");
 } else {
-  const game = new Game(container, loadConfig());
+  const config = loadConfig();
+  if (isTouchOnly()) applyMobileProfile(config);
+  const game = new Game(container, config);
   game.start();
 
   const boot = async () => {
     // Desde X la mayoría abre el link en el teléfono: avisar antes de bajar ~90 MB.
     if (isTouchOnly()) {
       await game.hud.gate(
-        `Este prototipo se juega en computadora, con teclado y mouse. Desde el celular podés cargarlo para mirar, ` +
-          `pero descarga ~${APPROX_DOWNLOAD_MB} MB y no tiene controles táctiles.`,
-        `CARGAR IGUAL · ${APPROX_DOWNLOAD_MB} MB`,
+        `Descarga ~${APPROX_DOWNLOAD_MB} MB: mejor con WiFi. Se juega con controles táctiles, ` +
+          `con el teléfono horizontal; en computadora se ve y se juega mejor.`,
+        `CARGAR · ${APPROX_DOWNLOAD_MB} MB`,
       );
     } else if (prefersSavingData()) {
       await game.hud.gate(`Tenés activado el ahorro de datos. El juego descarga ~${APPROX_DOWNLOAD_MB} MB.`, `CARGAR · ${APPROX_DOWNLOAD_MB} MB`);

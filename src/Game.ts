@@ -13,6 +13,7 @@ import { InputManager } from "./InputManager";
 import { PlayerController } from "./PlayerController";
 import { SplatEnvironment } from "./SplatEnvironment";
 import { ThirdPersonCamera } from "./ThirdPersonCamera";
+import { TouchControls, isTouchPrimary } from "./TouchControls";
 import { World } from "./World";
 
 const MAX_TICKS_PER_FRAME = 12;
@@ -28,6 +29,9 @@ export class Game {
   readonly hud: Hud;
   readonly debug: DebugPanel;
   private readonly collisionView: CollisionDebugView;
+  readonly touch: TouchControls;
+  /** Controles táctiles activos (celular/tablet, o primer toque en pantalla táctil). */
+  private touchMode = isTouchPrimary();
 
   private running = false;
   private playing = false;
@@ -101,6 +105,11 @@ export class Game {
 
     this.hud.onEnter = () => this.enter();
 
+    this.touch = new TouchControls(container, this.input, config);
+    if (this.touchMode) this.hud.setTouchHelp();
+    // Laptops con pantalla táctil: pasar a controles táctiles al primer toque.
+    window.addEventListener("pointerdown", this.handleFirstTouch);
+
     // Aviso de captura del mouse: transitorio, nunca fijo en pantalla.
     this.input.onPointerLockChange = (locked) => {
       if (!this.playing) return;
@@ -109,7 +118,7 @@ export class Game {
     };
     this.input.onPointerLockError = () => {
       // Sólo una vez, y no si el jugador ya está arrastrando (encontró la alternativa).
-      if (!this.playing || this.pointerLockErrorShown || this.input.isDragging) return;
+      if (!this.playing || this.touchMode || this.pointerLockErrorShown || this.input.isDragging) return;
       this.pointerLockErrorShown = true;
       this.hud.showHint("SIN CAPTURA DE MOUSE · ARRASTRÁ PARA ROTAR LA CÁMARA", 3500);
     };
@@ -178,9 +187,36 @@ export class Game {
     this.playing = true;
     this.hud.hideStart();
     this.input.enabled = true;
-    this.input.requestPointerLock();
+    if (this.touchMode) {
+      this.touch.show();
+      this.enterFullscreen();
+      if (this.world.isPortrait) this.hud.showHint("GIRÁ EL TELÉFONO PARA VER MÁS", 3500);
+    } else {
+      this.input.requestPointerLock();
+    }
     this.player.reset();
   }
+
+  /** Pantalla completa + horizontal en móviles (donde el navegador lo permite; iPhone no). */
+  private enterFullscreen(): void {
+    const root = document.documentElement;
+    if (!root.requestFullscreen || document.fullscreenElement) return;
+    root
+      .requestFullscreen({ navigationUI: "hide" })
+      .then(() => {
+        const orientation = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+        return orientation.lock?.("landscape");
+      })
+      .catch(() => undefined);
+  }
+
+  private readonly handleFirstTouch = (e: PointerEvent) => {
+    if (e.pointerType !== "touch" || this.touchMode) return;
+    this.touchMode = true;
+    this.hud.setTouchHelp();
+    this.input.exitPointerLock();
+    if (this.playing) this.touch.show();
+  };
 
   private frame(now: number): void {
     const frameDt = Math.min((now - this.lastTime) / 1000, 0.25);
@@ -308,6 +344,8 @@ export class Game {
     this.input.exitPointerLock();
     this.input.dispose();
     this.debug.dispose();
+    window.removeEventListener("pointerdown", this.handleFirstTouch);
+    this.touch.dispose();
     this.character.dispose();
     this.environment.dispose();
     this.collision.dispose();

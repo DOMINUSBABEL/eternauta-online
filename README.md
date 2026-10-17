@@ -8,8 +8,8 @@ postapocalíptica bajo la nevada mortal, reconstruida con **Gaussian splatting**
 Stack: **Three.js 0.186 · TypeScript 6 · Vite 8 · Spark 2.3 (World Labs)** ·
 lil-gui · three-mesh-bvh. Todo WebGL2, corre directo en Chrome.
 
-**Jugalo:** <https://santisiri.github.io/eternauta-online/> (en computadora, con
-teclado y mouse; descarga ~95 MB).
+**Jugalo:** <https://santisiri.github.io/eternauta-online/> (computadora con
+teclado y mouse, o celular con controles táctiles; descarga ~95 MB).
 
 ## Inicio rápido
 
@@ -47,6 +47,22 @@ npm run inspect:assets # analiza el SPZ y el FBX desde Node (ver abajo)
 | R | Reiniciar posición |
 | Esc | Liberar el mouse |
 | P / º / F3 | Panel de calibración y métricas |
+
+En celulares y tablets (detectados por `pointer: coarse`, o al primer toque en
+una pantalla táctil):
+
+| Gesto | Acción |
+|---|---|
+| Joystick (mitad izquierda, aparece donde apoyás el dedo) | Moverse; inclinado al tope corre |
+| Arrastrar en el resto de la pantalla | Rotar cámara |
+| Pellizcar | Distancia de cámara |
+| Botón SALTAR / ↺ | Saltar / reiniciar posición |
+
+Al entrar se pide pantalla completa y orientación horizontal (Android; iPhone no
+lo permite). En vertical el FOV se abre hasta 85° para no ver "por un tubo".
+El perfil móvil (`applyMobileProfile`) baja el pixel ratio a 1,25, reduce la
+nevada y quita el grano/filtros CSS; Spark ya usa por su cuenta un presupuesto
+de LoD menor en móviles (~1 M de splats visibles).
 
 ## Assets
 
@@ -122,7 +138,8 @@ src/
   PlayerController.ts   controlador cinemático independiente del render
   CollisionSystem.ts    interfaz CollisionProvider + suelo provisional + malla GLB (BVH)
   ThirdPersonCamera.ts  cámara orbital estilo PS2 con suavizado y anti-clipping
-  InputManager.ts       teclado, pointer lock, mouse, rueda
+  InputManager.ts       teclado, pointer lock, mouse, rueda + entrada virtual
+  TouchControls.ts      joystick, cámara táctil, pellizco y botones (móviles)
   Hud.ts                título, métricas, pantalla inicial, overlays de grano/viñeta
   DebugPanel.ts         calibración en vivo (lil-gui) + métricas + export de config
   Snowfall.ts           nevada en GPU que acompaña a la cámara
@@ -238,8 +255,8 @@ Cada push a `main` compila y publica con GitHub Actions
   fusionado a `animations/running.json`, 35 KB en lugar de 17 MB).
 - `.env` define `VITE_SITE_URL`, usada por la tarjeta de X/Open Graph
   (`public/og.jpg`, 1200×630). Si publicás un fork, cambiala.
-- En celulares (sin mouse) o con ahorro de datos, el juego avisa y espera
-  confirmación antes de descargar.
+- En celulares (sin mouse) o con ahorro de datos, el juego avisa el tamaño de la
+  descarga y espera confirmación antes de bajar los assets.
 - GitHub Pages tiene un límite flexible de 100 GB/mes (≈1.000 visitas a ~95 MB).
   Si el tráfico crece, el siguiente paso es servir `scene.spz` y el FBX desde
   Cloudflare R2 (sin costo de egreso) y apuntar `config.assets` ahí.

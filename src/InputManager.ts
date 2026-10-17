@@ -24,6 +24,10 @@ export class InputManager {
   private mouseDY = 0;
   private wheelDelta = 0;
   private dragging = false;
+  /** Entrada virtual (controles táctiles): eje de movimiento y carrera. */
+  private virtualX = 0;
+  private virtualY = 0;
+  private virtualRun = false;
   /** Cuando es false se ignora la entrada de juego (p. ej. pantalla inicial). */
   enabled = false;
 
@@ -81,12 +85,39 @@ export class InputManager {
     if (this.keys.has("KeyS") || this.keys.has("ArrowDown")) y -= 1;
     if (this.keys.has("KeyD") || this.keys.has("ArrowRight")) x += 1;
     if (this.keys.has("KeyA") || this.keys.has("ArrowLeft")) x -= 1;
+    // El teclado manda; si no hay teclas, el joystick táctil (analógico).
+    if (x === 0 && y === 0) return { x: this.virtualX, y: this.virtualY };
     const len = Math.hypot(x, y);
     return len > 1 ? { x: x / len, y: y / len } : { x, y };
   }
 
   get running(): boolean {
-    return this.isDown("ShiftLeft") || this.isDown("ShiftRight");
+    return this.isDown("ShiftLeft") || this.isDown("ShiftRight") || (this.enabled && this.virtualRun);
+  }
+
+  // --- Entrada virtual (TouchControls) -----------------------------------------
+
+  /** Joystick: x = derecha, y = adelante, magnitud ≤ 1. */
+  setVirtualMove(x: number, y: number, run: boolean): void {
+    this.virtualX = x;
+    this.virtualY = y;
+    this.virtualRun = run;
+  }
+
+  /** Delta de cámara en "píxeles de mouse" (se escala con camera.sensitivity). */
+  addLookDelta(dx: number, dy: number): void {
+    if (!this.enabled) return;
+    this.mouseDX += dx;
+    this.mouseDY += dy;
+  }
+
+  addWheel(delta: number): void {
+    if (this.enabled) this.wheelDelta += delta;
+  }
+
+  /** Dispara una acción de flanco (botón táctil). */
+  trigger(action: ActionName): void {
+    if (this.enabled || action === "toggleDebug") this.pressed.add(action);
   }
 
   /** Devuelve true una sola vez por pulsación. */
@@ -145,6 +176,7 @@ export class InputManager {
   private readonly handleBlur = () => {
     this.keys.clear();
     this.dragging = false;
+    this.setVirtualMove(0, 0, false);
   };
 
   private readonly handlePointerLockChange = () => {

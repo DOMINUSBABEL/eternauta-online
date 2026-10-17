@@ -31,6 +31,8 @@ export class Hud {
   private readonly enterButton: HTMLButtonElement;
   private readonly errors: HTMLElement;
   private readonly note: HTMLElement;
+  private readonly help: HTMLElement;
+  private readonly keys: HTMLElement;
   private readonly hint: HTMLElement;
   private hintTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly items = new Map<string, LoadItem>();
@@ -63,6 +65,7 @@ export class Hud {
     };
 
     const help = el("div", "hud-help");
+    this.help = help;
     help.innerHTML =
       "<b>WASD</b> mover · <b>Shift</b> correr · <b>Espacio</b> saltar · <b>R</b> reiniciar · " +
       "<b>Rueda</b> distancia · <b>Esc</b> liberar mouse · <b>P</b> panel debug";
@@ -98,6 +101,7 @@ export class Hud {
     this.enterButton.disabled = true;
     this.enterButton.addEventListener("click", () => this.onEnter?.());
     const keys = el("p", "start-keys");
+    this.keys = keys;
     keys.innerHTML = help.innerHTML;
     card.append(kicker, h, sub, quote, this.note, loading, this.errors, this.enterButton, keys);
     this.start.append(card);
@@ -117,6 +121,16 @@ export class Hud {
   showError(message: string): void {
     const p = el("p", "", message);
     this.errors.append(p);
+  }
+
+  /** Reemplaza la ayuda de teclado por la de controles táctiles. */
+  setTouchHelp(): void {
+    const html =
+      "<b>Joystick izquierdo</b> mover (al tope: correr) · <b>Arrastrar</b> cámara · " +
+      "<b>Pellizcar</b> zoom · <b>SALTAR</b> · <b>↺</b> reiniciar";
+    this.keys.innerHTML = html;
+    this.help.innerHTML = html;
+    document.body.classList.add("touch");
   }
 
   /**

@@ -90,8 +90,16 @@ export class World {
     const h = this.container.clientHeight || window.innerHeight;
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(w, h, true);
-    this.camera.aspect = w / h;
+    const aspect = w / h;
+    this.camera.aspect = aspect;
+    // Vertical (celular parado): abrir el FOV para conservar campo horizontal.
+    const base = this.config.camera.fov;
+    this.camera.fov = aspect < 1 ? Math.min(Math.max(base, this.config.camera.portraitMaxFov), base / Math.sqrt(aspect)) : base;
     this.camera.updateProjectionMatrix();
+  }
+
+  get isPortrait(): boolean {
+    return this.camera.aspect < 1;
   }
 
   /** Mantiene la luz direccional centrada en el jugador. */

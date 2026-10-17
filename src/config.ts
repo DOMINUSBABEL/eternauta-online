@@ -117,6 +117,10 @@ export interface GameConfig {
     minPitchDeg: number;
     maxPitchDeg: number;
     sensitivity: number;
+    /** Rotación por px de arrastre táctil (rad/px). */
+    touchSensitivity: number;
+    /** En pantallas verticales se abre el FOV para no ver "por un tubo" (grados máx.). */
+    portraitMaxFov: number;
     invertY: boolean;
     /** Rigidez del seguimiento de posición (1/s). */
     followStiffness: number;
@@ -237,6 +241,8 @@ export const defaultConfig: GameConfig = {
     minPitchDeg: -35,
     maxPitchDeg: 70,
     sensitivity: 0.0022,
+    touchSensitivity: 0.0085,
+    portraitMaxFov: 85,
     invertY: false,
     followStiffness: 12,
     rotationStiffness: 22,
@@ -264,6 +270,18 @@ export const defaultConfig: GameConfig = {
     snowSize: 0.045,
   },
 };
+
+/**
+ * Ajustes para celulares y tablets: menos píxeles, menos partículas y sin
+ * efectos de composición CSS (grano/filtros), que en GPUs móviles cuestan.
+ * Spark ya reduce por su cuenta el presupuesto de splats del LoD en móviles.
+ */
+export function applyMobileProfile(config: GameConfig): void {
+  config.render.maxPixelRatio = Math.min(config.render.maxPixelRatio, 1.25);
+  config.render.filmGrain = false;
+  config.atmosphere.snowCount = Math.min(config.atmosphere.snowCount, 2500);
+  config.camera.distance = Math.max(config.camera.distance, 4.6);
+}
 
 const STORAGE_KEY = "eternauta.config.v1";
 
