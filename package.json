@@ -13,7 +13,12 @@
     "inspect:assets": "node scripts/inspect-assets.mjs",
     "extract:clip": "node scripts/extract-clip.mjs",
     "optimize:assets": "bash scripts/optimize-assets.sh",
-    "prepare:collider": "node scripts/prepare-collider.mjs"
+    "prepare:collider": "node scripts/prepare-collider.mjs",
+    "analyze:props": "node scripts/analyze-props.mjs",
+    "collider:base": "node scripts/prepare-collider.mjs 'assets-src/Nevada en Plaza de Mayo_collider.glb' assets-src/collider_base.glb",
+    "collider:publish": "node scripts/prepare-collider.mjs assets-src/collider_refined.glb public/assets/collider.glb",
+    "collider:export": "${BLENDER:-/Applications/Blender.app/Contents/MacOS/Blender} -b assets-src/colisiones.blend --python scripts/blender/headless.py -- export && rm -f assets-src/colisiones.blend1 && npm run collider:publish",
+    "collider:rebuild": "${BLENDER:-/Applications/Blender.app/Contents/MacOS/Blender} -b --factory-startup --python scripts/blender/headless.py -- setup && rm -f assets-src/colisiones.blend1 && npm run collider:publish"
   },
   "dependencies": {
     "@sparkjsdev/spark": "^2.3.1",

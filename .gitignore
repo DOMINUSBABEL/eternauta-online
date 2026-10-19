@@ -12,3 +12,7 @@ public/assets/player/* 2.png
 
 # Config local de MCP (rutas de esta máquina)
 .mcp.json
+
+# Respaldos de Blender y del exportador
+*.blend1
+assets-src/collider-fixes.json.bak

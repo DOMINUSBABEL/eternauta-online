@@ -223,10 +223,38 @@ alcanzable desde el spawn (≈6.400 m², medida con un *flood fill* sobre la
 malla): los que frenan son los edificios. Con **P → Suelo y límites →
 mostrar colisiones** se ve el wireframe del collider sobre el splat.
 
-Limitación: el collider de Marble tiene ~1 m de resolución. Los canteros son
-montículos suaves de ~12° (se caminan por encima) y los cajones se funden con el
-colectivo. Para precisión de shooter, el siguiente paso es corregir esos
-objetos en Blender (el MCP ya está configurado, ver `.mcp.json`).
+El collider de Marble tiene ~1 m de resolución y errores alrededor de los
+objetos: los canteros eran montículos de ~12° (se caminaban por encima), el
+colectivo una meseta de 1,35 m y un árbol un montículo de 5 m de ancho. Se
+corrigen en Blender:
+
+### Correcciones en Blender
+
+Fuente de verdad: `assets-src/collider-fixes.json` (legible, con diffs en git).
+Cada corrección es `box` (volumen), `cylinder` (tronco/poste) o `ground` (sólo
+piso plano, para borrar artefactos). La exportación **corta** la malla de Marble
+en el borde de cada zona (huella + 1,5 m), borra lo de adentro y pone suelo plano
++ el volumen, sin dejar agujeros.
+
+Hoy: colectivo (13,4 × 2,9 × 3,4 m), un árbol (r 0,5 m), 6 canteros (0,6 m de
+alto: no se suben caminando, sí saltando) y 2 parches de suelo alrededor del
+colectivo. Medidas tomadas del splat (vista cenital + franja de alturas del
+cuerpo) y revisadas una por una.
+
+```bash
+npm run analyze:props     # referencias: vista cenital, alturas, grilla de suelo (assets-src/reference/)
+npm run collider:base     # collider de Marble horneado y recortado → assets-src/collider_base.glb
+npm run collider:rebuild  # JSON → escena de Blender (assets-src/colisiones.blend) → collider publicado
+npm run collider:export   # .blend editado → JSON + assets-src/collider_refined.glb → publicado
+```
+
+Para editar a mano: abrir `assets-src/colisiones.blend`, mover / rotar / escalar
+los objetos de la colección **Correcciones** (en modo objeto: la escala es largo
+× ancho × alto), guardar y correr `npm run collider:export`. Con el MCP de
+Blender también se pueden correr `scripts/blender/collider_setup.py` y
+`collider_export.py` dentro de la sesión abierta (definiendo `ROOT`). El GLB se
+escribe directamente desde Python: el exportador glTF de Blender, llamado desde
+el temporizador del addon MCP, cerró Blender en una prueba.
 
 ## Calibración
 
@@ -288,8 +316,8 @@ Cada push a `main` compila y publica con GitHub Actions
 
 ## Próximos pasos sugeridos
 
-1. Refinar el collider en Blender: canteros, cajones, colectivo y bancos como
-   volúmenes precisos (el collider de Marble los suaviza).
+1. Seguir refinando el collider en Blender: los cajones al sur del colectivo
+   (Marble los corre ~1–2 m), bancos y el resto de los canteros chicos.
 2. Clips idle / jump desde Meshy o Mixamo con el mismo rig.
 3. Precompilar el LoD a `.rad` para carga instantánea y streaming.
 4. Estado de red: el controlador ya es determinista a paso fijo, base para
