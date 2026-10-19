@@ -98,6 +98,8 @@ export interface GameConfig {
     /** Velocidad de giro del personaje hacia la dirección de marcha (rad/s aprox.). */
     turnSpeed: number;
     radius: number;
+    /** Pendiente máxima que se puede subir caminando (grados). */
+    maxSlopeDeg: number;
     /** Paso de simulación fijo (Hz). */
     tickRate: number;
     maxFallSpeed: number;
@@ -180,7 +182,10 @@ export const defaultConfig: GameConfig = {
       { state: "run", url: asset("assets/player/animations/running.json") },
     ],
     splatUrl: asset("assets/scene.spz"),
-    collisionMeshUrl: null,
+    // Collider mesh exportado desde Marble (mismo sistema de referencia que el
+    // splat; la transformación viene en el nodo raíz del GLB). Optimizado con
+    // `npm run prepare:collider`. null = suelo provisional.
+    collisionMeshUrl: asset("assets/collider.glb"),
   },
   character: {
     targetHeight: 1.8,
@@ -209,8 +214,10 @@ export const defaultConfig: GameConfig = {
     groundHeight: -0.2,
     groundSlopeX: -0.003,
     groundSlopeZ: -0.0006,
-    // Zona caminable de la plaza (los edificios quedan afuera).
-    bounds: { minX: -42, maxX: 40, minZ: -50, maxZ: 28 },
+    // Red de seguridad: con el collider de Marble, los límites reales son los
+    // edificios. Este rectángulo envuelve el área alcanzable desde el spawn
+    // (x[-46.5, 57] z[-78.5, 40.5], medida con un flood fill sobre la malla).
+    bounds: { minX: -48, maxX: 59, minZ: -80, maxZ: 42 },
     killY: -30,
     spawn: { x: 0, y: 0, z: 0 },
     spawnYawDeg: 0,
@@ -226,6 +233,7 @@ export const defaultConfig: GameConfig = {
     jumpSpeed: 6.2,
     turnSpeed: 10,
     radius: 0.35,
+    maxSlopeDeg: 40,
     tickRate: 120,
     maxFallSpeed: 40,
   },

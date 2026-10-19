@@ -21,6 +21,17 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { GameConfig } from "./config";
 
+/**
+ * Muestra del suelo: altura y normal de la superficie orientada hacia arriba.
+ * normalY: 1 = plano, 0 = pared. (normalX, normalZ) apunta cuesta abajo.
+ */
+export interface GroundSample {
+  height: number;
+  normalX: number;
+  normalY: number;
+  normalZ: number;
+}
+
 export interface CollisionProvider {
   readonly name: string;
   /**
@@ -28,6 +39,8 @@ export interface CollisionProvider {
    * Devuelve null si no hay suelo (agujero / fuera de la malla).
    */
   groundHeight(x: number, z: number, fromY: number): number | null;
+  /** Como groundHeight, pero incluye la inclinación de la superficie. */
+  groundSample(x: number, z: number, fromY: number): GroundSample | null;
   /**
    * Empuja un cilindro vertical (pies en position.y, alto `height`) fuera de
    * los obstáculos. Modifica `position` en el plano XZ.
@@ -51,13 +64,23 @@ export class ProvisionalCollision implements CollisionProvider {
   constructor(private readonly config: GameConfig) {}
 
   groundHeight(x: number, z: number): number {
+    return this.groundSample(x, z).height;
+  }
+
+  groundSample(x: number, z: number): GroundSample {
     const w = this.config.world;
-    let h = w.groundHeight + w.groundSlopeX * x + w.groundSlopeZ * z;
-    // Las cajas también son "suelo" si el jugador está encima.
+    let height = w.groundHeight + w.groundSlopeX * x + w.groundSlopeZ * z;
+    // Normal del plano y = h + sx·x + sz·z  →  (-sx, 1, -sz) normalizada.
+    const len = Math.hypot(1, w.groundSlopeX, w.groundSlopeZ);
+    let sample = { normalX: -w.groundSlopeX / len, normalY: 1 / len, normalZ: -w.groundSlopeZ / len };
+    // Las cajas también son "suelo" (plano) si el jugador está encima.
     for (const o of w.obstacles) {
-      if (x >= o.min.x && x <= o.max.x && z >= o.min.z && z <= o.max.z) h = Math.max(h, o.max.y);
+      if (x >= o.min.x && x <= o.max.x && z >= o.min.z && z <= o.max.z && o.max.y > height) {
+        height = o.max.y;
+        sample = { normalX: 0, normalY: 1, normalZ: 0 };
+      }
     }
-    return h;
+    return { height, ...sample };
   }
 
   /** Altura del plano base, sin obstáculos (para la cámara y el debug). */
@@ -120,13 +143,14 @@ export class MeshCollision implements CollisionProvider {
   /** Transformación mundo ← malla (la misma que el splat: comparten sistema de referencia). */
   private readonly matrix = new THREE.Matrix4();
   private readonly inverse = new THREE.Matrix4();
+  private readonly normalMatrix = new THREE.Matrix3();
   private scale = 1;
   private readonly ray = new THREE.Ray();
   private readonly tmp = new THREE.Vector3();
   private readonly tmpDir = new THREE.Vector3();
   private readonly hitInfo: HitPointInfo = { point: new THREE.Vector3(), distance: 0, faceIndex: 0 };
   /** Altura máxima de escalón que el jugador puede subir (m). */
-  stepHeight = 0.45;
+  stepHeight = 0.35;
 
   private constructor(geometry: THREE.BufferGeometry, url: string) {
     this.geometry = geometry;
@@ -163,17 +187,34 @@ export class MeshCollision implements CollisionProvider {
   setTransform(matrix: THREE.Matrix4): void {
     this.matrix.copy(matrix);
     this.inverse.copy(matrix).invert();
+    this.normalMatrix.getNormalMatrix(matrix);
     this.scale = new THREE.Vector3().setFromMatrixScale(matrix).x || 1;
   }
 
   groundHeight(x: number, z: number, fromY: number): number | null {
+    return this.groundSample(x, z, fromY)?.height ?? null;
+  }
+
+  groundSample(x: number, z: number, fromY: number): GroundSample | null {
     // Rayo hacia abajo desde un poco por encima de los pies (permite subir escalones).
     this.tmp.set(x, fromY + this.stepHeight, z).applyMatrix4(this.inverse);
     this.tmpDir.set(0, -1, 0).transformDirection(this.inverse);
     this.ray.set(this.tmp, this.tmpDir);
     const hit = this.bvh.raycastFirst(this.ray, THREE.DoubleSide);
     if (!hit) return null;
-    return hit.point.applyMatrix4(this.matrix).y;
+    this.tmpDir.set(0, 1, 0);
+    if (hit.face) {
+      // Normal al espacio del mundo; DoubleSide: la cara puede mirar hacia abajo,
+      // así que se orienta siempre hacia arriba.
+      this.tmpDir.copy(hit.face.normal).applyMatrix3(this.normalMatrix).normalize();
+      if (this.tmpDir.y < 0) this.tmpDir.negate();
+    }
+    return {
+      height: hit.point.applyMatrix4(this.matrix).y,
+      normalX: this.tmpDir.x,
+      normalY: this.tmpDir.y,
+      normalZ: this.tmpDir.z,
+    };
   }
 
   resolveHorizontal(position: THREE.Vector3, radius: number, height: number): void {
@@ -208,6 +249,19 @@ export class MeshCollision implements CollisionProvider {
     return hit.distance * this.scale;
   }
 
+  /** Wireframe de la malla de colisión, con la misma transformación (debug). */
+  createDebugObject(): THREE.Object3D {
+    const mesh = new THREE.Mesh(
+      this.geometry,
+      new THREE.MeshBasicMaterial({ color: 0x33ccff, wireframe: true, transparent: true, opacity: 0.22, depthWrite: false }),
+    );
+    mesh.name = "collision-mesh-debug";
+    mesh.matrixAutoUpdate = false;
+    mesh.matrix.copy(this.matrix);
+    mesh.renderOrder = 21;
+    return mesh;
+  }
+
   dispose(): void {
     this.geometry.dispose();
   }
@@ -239,6 +293,7 @@ export class CollisionSystem {
       this.mesh?.dispose();
       this.mesh = mesh;
       this.status = mesh.name;
+      this.onMeshChange?.(mesh);
     } catch (err) {
       this.status = `ERROR malla: ${(err as Error).message} (usando provisional)`;
       console.error("[Collision]", err);
@@ -247,10 +302,22 @@ export class CollisionSystem {
 
   updateEnvironmentTransform(matrix: THREE.Matrix4): void {
     this.mesh?.setTransform(matrix);
+    this.onMeshChange?.(this.mesh);
   }
+
+  get hasMesh(): boolean {
+    return this.mesh !== null;
+  }
+
+  /** Avisa a la vista de debug cuando cambia la malla o su transformación. */
+  onMeshChange?: (mesh: MeshCollision | null) => void;
 
   groundHeight(x: number, z: number, fromY: number): number | null {
     return this.provider.groundHeight(x, z, fromY);
+  }
+
+  groundSample(x: number, z: number, fromY: number): GroundSample | null {
+    return this.provider.groundSample(x, z, fromY);
   }
 
   resolveHorizontal(position: THREE.Vector3, radius: number, height: number): void {
@@ -287,6 +354,7 @@ export class CollisionDebugView {
   private obstacleGroup = new THREE.Group();
   private obstacleKey = "";
   private boundsKey = "";
+  private meshDebug: THREE.Object3D | null = null;
 
   constructor(private readonly config: GameConfig) {
     this.group.name = "collision-debug";
@@ -314,6 +382,18 @@ export class CollisionDebugView {
     this.wallEdges.renderOrder = 22;
     this.group.add(this.grid, this.walls, this.wallEdges, this.obstacleGroup);
     this.group.visible = false;
+  }
+
+  /** Reemplaza el wireframe de la malla de colisión (o lo quita con null). */
+  setCollisionMesh(mesh: MeshCollision | null): void {
+    if (this.meshDebug) {
+      this.group.remove(this.meshDebug);
+      ((this.meshDebug as THREE.Mesh).material as THREE.Material).dispose();
+    }
+    this.meshDebug = mesh ? mesh.createDebugObject() : null;
+    if (this.meshDebug) this.group.add(this.meshDebug);
+    // Con malla real, la grilla del suelo provisional ya no aplica.
+    this.grid.visible = !mesh;
   }
 
   update(player: THREE.Vector3): void {

@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "inspect:assets": "node scripts/inspect-assets.mjs",
     "extract:clip": "node scripts/extract-clip.mjs",
-    "optimize:assets": "bash scripts/optimize-assets.sh"
+    "optimize:assets": "bash scripts/optimize-assets.sh",
+    "prepare:collider": "node scripts/prepare-collider.mjs"
   },
   "dependencies": {
     "@sparkjsdev/spark": "^2.3.1",

@@ -65,6 +65,7 @@ export class Game {
     this.hud.applyEffects(config);
     this.collisionView = new CollisionDebugView(config);
     this.world.scene.add(this.collisionView.group, this.character.shadowBlob);
+    this.collision.onMeshChange = (mesh) => this.collisionView.setCollisionMesh(mesh);
 
     this.player.height = config.character.targetHeight * config.character.scaleMultiplier;
     this.player.onReset = () => this.camera.snapBehind(this.player.position, this.player.yaw);

@@ -27,6 +27,10 @@ const COYOTE_TIME = 0.1;
 const JUMP_BUFFER = 0.12;
 /** Distancia de "pegado" al suelo al bajar pendientes/escalones. */
 const GROUND_SNAP = 0.35;
+/** Fracción de la gravedad que empuja cuesta abajo en superficies no caminables. */
+const SLIDE_FACTOR = 0.8;
+/** Altura sobre el spawn desde la que se busca el suelo al reaparecer. */
+const SPAWN_PROBE_HEIGHT = 2;
 
 function lerpAngle(a: number, b: number, t: number): number {
   const d = Math.atan2(Math.sin(b - a), Math.cos(b - a));
@@ -45,6 +49,8 @@ export class PlayerController {
   height = 1.8;
 
   private coyote = 0;
+  /** Parado sobre una superficie más empinada que maxSlopeDeg (se desliza). */
+  private onSteepGround = false;
   private jumpBuffer = 0;
   private readonly wish = new THREE.Vector3();
   private readonly horizontal = new THREE.Vector3();
@@ -65,7 +71,9 @@ export class PlayerController {
 
   reset(): void {
     const { spawn, spawnYawDeg } = this.config.world;
-    const ground = this.collision.groundHeight(spawn.x, spawn.z, spawn.y + 50);
+    // Buscar el suelo desde poco por encima del spawn: con una malla real,
+    // desde muy alto el rayo podría pegar en la copa de un árbol.
+    const ground = this.collision.groundHeight(spawn.x, spawn.z, spawn.y + SPAWN_PROBE_HEIGHT);
     this.position.set(spawn.x, Math.max(spawn.y, ground ?? spawn.y), spawn.z);
     this.previousPosition.copy(this.position);
     this.velocity.set(0, 0, 0);
@@ -97,7 +105,8 @@ export class PlayerController {
     this.horizontal.set(this.velocity.x, 0, this.velocity.z);
     const accelerating = wishLen > 1e-4;
     let rate = accelerating ? m.acceleration : m.deceleration;
-    if (!this.grounded) rate *= m.airControl;
+    // En el aire o sobre una pendiente no caminable, el control es reducido.
+    if (!this.grounded || this.onSteepGround) rate *= m.airControl;
     const maxDelta = rate * maxSpeed * dt;
     const diff = this.target.sub(this.horizontal);
     const diffLen = diff.length();
@@ -130,18 +139,30 @@ export class PlayerController {
 
     // --- Integración + colisiones horizontales -------------------------------
     const wasGrounded = this.grounded;
+    const fromX = this.position.x;
+    const fromZ = this.position.z;
     this.position.addScaledVector(this.velocity, dt);
     this.collision.resolveHorizontal(this.position, m.radius, this.height);
+    this.blockUnwalkable(fromX, fromZ);
 
     // --- Detección de suelo ----------------------------------------------------
-    const ground = this.collision.groundHeight(this.position.x, this.position.z, this.position.y);
+    const sample = this.collision.groundSample(this.position.x, this.position.z, this.position.y);
     const snap = wasGrounded && this.velocity.y <= 0 ? GROUND_SNAP : 0;
-    if (ground !== null && this.position.y <= ground + snap) {
-      this.position.y = ground;
+    if (sample !== null && this.position.y <= sample.height + snap) {
+      this.position.y = sample.height;
       if (this.velocity.y < 0) this.velocity.y = 0;
       this.grounded = this.velocity.y <= 0;
+      // Parado sobre algo demasiado empinado (p. ej. tras saltar contra el
+      // colectivo): deslizarse cuesta abajo en vez de quedarse pegado.
+      const minNormalY = Math.cos(THREE.MathUtils.degToRad(m.maxSlopeDeg));
+      this.onSteepGround = this.grounded && sample.normalY < minNormalY;
+      if (this.onSteepGround) {
+        this.velocity.x += sample.normalX * m.gravity * SLIDE_FACTOR * dt;
+        this.velocity.z += sample.normalZ * m.gravity * SLIDE_FACTOR * dt;
+      }
     } else {
       this.grounded = false;
+      this.onSteepGround = false;
     }
 
     // --- Prevención de caídas infinitas --------------------------------------
@@ -151,6 +172,39 @@ export class PlayerController {
     }
 
     this.state = this.computeState(intent.run);
+  }
+
+  /**
+   * Con una malla de colisión real hay zonas que no se pueden pisar:
+   *  - sin suelo (interior de edificios, huecos de la reconstrucción),
+   *  - subidas más empinadas que `movement.maxSlopeDeg` (la malla de Marble
+   *    es suave: los obstáculos son rampas, no paredes verticales).
+   * Bajar una pendiente fuerte sí está permitido. Ante un bloqueo se intenta
+   * deslizar por cada eje y, si ninguno sirve, se vuelve a la posición anterior.
+   */
+  private blockUnwalkable(fromX: number, fromZ: number): void {
+    const p = this.position;
+    const minNormalY = Math.cos(THREE.MathUtils.degToRad(this.config.movement.maxSlopeDeg));
+    const walkable = (x: number, z: number) => {
+      const s = this.collision.groundSample(x, z, p.y);
+      if (!s) return false;
+      // Superficie caminable, o movimiento que no sube (1 mm de tolerancia:
+      // con más, avanzar de a pasos chicos permitiría trepar de a poco).
+      return s.normalY >= minNormalY || s.height <= p.y + 0.001;
+    };
+    if (walkable(p.x, p.z)) return;
+    if (walkable(p.x, fromZ)) {
+      p.z = fromZ;
+      this.velocity.z = 0;
+    } else if (walkable(fromX, p.z)) {
+      p.x = fromX;
+      this.velocity.x = 0;
+    } else {
+      p.x = fromX;
+      p.z = fromZ;
+      this.velocity.x = 0;
+      this.velocity.z = 0;
+    }
   }
 
   private computeState(run: boolean): LocomotionState {

@@ -118,7 +118,7 @@ export class DebugPanel {
 
     // --- Mundo / colisiones -------------------------------------------------
     const w = gui.addFolder("Suelo y límites").close();
-    w.add(this.view, "collisionDebug").name("mostrar suelo invisible").onChange((v: boolean) => h.setCollisionDebug(v));
+    w.add(this.view, "collisionDebug").name("mostrar colisiones").onChange((v: boolean) => h.setCollisionDebug(v));
     w.add(c.world, "groundHeight", -5, 5, 0.01).name("altura suelo (m)");
     w.add(c.world, "groundSlopeX", -0.1, 0.1, 0.001).name("pendiente X");
     w.add(c.world, "groundSlopeZ", -0.1, 0.1, 0.001).name("pendiente Z");
@@ -149,6 +149,7 @@ export class DebugPanel {
     mv.add(c.movement, "jumpSpeed", 0, 15, 0.1).name("impulso salto");
     mv.add(c.movement, "turnSpeed", 1, 30, 0.5).name("giro");
     mv.add(c.movement, "radius", 0.1, 1, 0.01).name("radio colisión");
+    mv.add(c.movement, "maxSlopeDeg", 10, 80, 1).name("pendiente máx. (°)");
 
     // --- Cámara -------------------------------------------------------------
     const cam = gui.addFolder("Cámara").close();

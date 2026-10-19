@@ -154,9 +154,9 @@ Decisiones clave:
   `Vector3`, así que la misma lógica puede correr en un servidor autoritativo
   cuando llegue el multijugador.
 - **Colisiones desacopladas del splat.** Todo consulta `CollisionProvider`
-  (`groundHeight`, `resolveHorizontal`, `raycast`). Hoy rige
-  `ProvisionalCollision`: un plano invisible con altura y pendiente ajustables,
-  límites rectangulares y cajas de obstáculo opcionales.
+  (`groundSample`, `resolveHorizontal`, `raycast`). Hoy rige `MeshCollision`
+  con el collider exportado desde Marble; `ProvisionalCollision` (plano
+  invisible ajustable + cajas) queda como respaldo si la malla no carga.
 - **Animación por pesos** en lugar de `crossFadeTo`: cada estado tiene una
   acción y los pesos se interpolan; la caminata ajusta su `timeScale` a la
   velocidad real para que los pies no patinen (velocidad natural del clip
@@ -187,19 +187,46 @@ Los FBX extra se descargan en paralelo con el personaje; de cada uno se extrae
 el clip y se liberan su geometría y texturas. Los clips sin keyframes animados
 se rechazan con un aviso.
 
-### Malla de colisiones real (Marble)
+### Malla de colisiones (collider de Marble)
 
-Marble puede exportar un *collider mesh* en GLB. Para usarlo:
+El collider exportado desde Marble (`assets-src/Nevada en Plaza de Mayo_collider.glb`,
+120 k triángulos, 4,3 MB) viene en convención "Y abajo" y con escala propia; la
+matriz que lo lleva al sistema del splat está en su nodo raíz (×7,145, Y/Z
+invertidos, +4,386 en Y). Verificado: el suelo de la malla coincide con el del
+splat a ±5 cm en las zonas abiertas.
 
-1. Copiarlo a `public/assets/collider.glb`.
-2. Poner `collisionMeshUrl: "/assets/collider.glb"` en `src/config.ts`.
+Para el juego se prepara con:
 
-`MeshCollision` lo carga, construye un BVH (three-mesh-bvh) y lo transforma con
-la misma matriz que el splat (posición/rotación/escala del escenario), así que
-ambos quedan alineados. Suelo por raycast descendente con subida de escalones,
-empuje lateral por esferas a la altura de rodillas/torso/cabeza, y raycast de
-cámara contra paredes. Si la carga falla, se informa en el HUD y se mantiene la
-colisión provisional.
+```bash
+npm run prepare:collider
+```
+
+que hornea esa matriz, recorta a la zona jugable + 15 m (para la cámara) y deja
+sólo posiciones e índices → `public/assets/collider.glb`, **17 k triángulos,
+0,36 MB**, con resultados idénticos al original dentro de la plaza.
+
+`MeshCollision` construye un BVH (three-mesh-bvh) y responde:
+
+- **Suelo** por rayo descendente (escalones de hasta 35 cm), con la normal de
+  la superficie.
+- **Pendiente máxima** (`movement.maxSlopeDeg`, 40°): no se sube por nada más
+  empinado; se puede bajar, y si el jugador cae sobre algo empinado se desliza.
+  Sin esto se podía trepar el colectivo (sus lados son rampas de 44°).
+- **Bordes sin suelo** (interior de edificios, huecos): no se cruzan; el
+  jugador se desliza por el borde.
+- **Paredes**: esferas a la altura de rodillas, torso y cabeza.
+- **Cámara**: rayo contra la malla; de espaldas a una fachada se acerca en
+  lugar de atravesarla.
+
+Los límites (`world.bounds`) quedaron como red de seguridad alrededor del área
+alcanzable desde el spawn (≈6.400 m², medida con un *flood fill* sobre la
+malla): los que frenan son los edificios. Con **P → Suelo y límites →
+mostrar colisiones** se ve el wireframe del collider sobre el splat.
+
+Limitación: el collider de Marble tiene ~1 m de resolución. Los canteros son
+montículos suaves de ~12° (se caminan por encima) y los cajones se funden con el
+colectivo. Para precisión de shooter, el siguiente paso es corregir esos
+objetos en Blender (el MCP ya está configurado, ver `.mcp.json`).
 
 ## Calibración
 
@@ -217,11 +244,9 @@ Abrir el panel con **P**. Todo edita `config` en vivo:
 
 Overrides por URL: `?renderScale=0.5`, `?envScale=1.1`, `?lod=0`.
 
-Los defaults de suelo provienen de ajustar un plano por mínimos cuadrados a la
-densidad de splats del suelo (calibración offline, la física no consulta el
-splat): `y = −0,2 − 0,003·x − 0,0006·z`, residuo mediano 0,15 m. Hay una
-hondonada de ~0,4 m hacia x≈30, z≈10 que un plano no captura: ahí los pies
-pueden flotar levemente hasta tener la malla de colisiones.
+El suelo provisional (respaldo si no hay collider) es un plano ajustado por
+mínimos cuadrados a la densidad de splats del suelo (calibración offline, la
+física no consulta el splat): `y = −0,2 − 0,003·x − 0,0006·z`.
 
 ## Rendimiento (medido)
 
@@ -263,8 +288,9 @@ Cada push a `main` compila y publica con GitHub Actions
 
 ## Próximos pasos sugeridos
 
-1. Exportar el collider mesh de Marble y activarlo (`collisionMeshUrl`).
-2. Clips idle / run / jump desde Mixamo con el mismo rig.
+1. Refinar el collider en Blender: canteros, cajones, colectivo y bancos como
+   volúmenes precisos (el collider de Marble los suaviza).
+2. Clips idle / jump desde Meshy o Mixamo con el mismo rig.
 3. Precompilar el LoD a `.rad` para carga instantánea y streaming.
 4. Estado de red: el controlador ya es determinista a paso fijo, base para
    predicción del lado del cliente + servidor autoritativo.
