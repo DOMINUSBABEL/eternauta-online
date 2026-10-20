@@ -17,8 +17,23 @@
 
 import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
-import type { AnimationStateName, GameConfig } from "./config";
-import type { LocomotionState } from "./PlayerController";
+import type { AnimationStateName, GameConfig, OneShotAction } from "./config";
+import type { LocomotionState, RootMotionCurve } from "./PlayerController";
+
+/** Lo que la animación necesita saber del controlador en cada frame. */
+export interface AnimationDriver {
+  state: LocomotionState;
+  horizontalSpeed: number;
+  velocity: { y: number };
+  shooting: boolean;
+  /** Tiempo del clip de la acción en curso (lo avanza el controlador a paso fijo). */
+  actionClipTime: number;
+}
+
+const ONE_SHOTS: OneShotAction[] = ["punch", "kick", "dodge", "die"];
+const isOneShot = (s: string): s is OneShotAction => (ONE_SHOTS as string[]).includes(s);
+/** Muestras por segundo de las curvas de root motion. */
+const ROOT_MOTION_RATE = 60;
 
 export interface CharacterReport {
   url: string;
@@ -35,7 +50,10 @@ export interface CharacterReport {
   groundOffset: number;
   walkClipSpeed: number;
   runClipSpeed: number;
+  shootClipSpeed: number;
   neutralPoseTime: number;
+  /** Desplazamiento neto del hueso raíz por acción (m), que aplica el controlador. */
+  rootMotion: Partial<Record<OneShotAction, number>>;
   rootMotionRemoved: string[];
   missingStates: AnimationStateName[];
   warnings: string[];
@@ -72,11 +90,19 @@ export class Character {
   private run: ActionSlot | null = null;
   private jump: ActionSlot | null = null;
   private fall: ActionSlot | null = null;
+  /** Correr disparando (cuerpo entero). */
+  private shoot: ActionSlot | null = null;
+  /** Disparar quieto: piernas del idle + torso del clip de disparo. */
+  private aim: ActionSlot | null = null;
+  private readonly oneShots = new Map<OneShotAction, ActionSlot>();
+  /** Root motion extraído de las acciones (lo consume PlayerController). */
+  readonly rootMotion = new Map<OneShotAction, RootMotionCurve>();
   private autoScale = 1;
   private autoForward = 0;
   private groundOffset = 0;
   private walkClipSpeed = 1.4;
   private runClipSpeed = 4;
+  private shootClipSpeed = 2.3;
   private readonly disposables: { dispose(): void }[] = [];
 
   constructor(private readonly config: GameConfig) {
@@ -171,9 +197,14 @@ export class Character {
       clip.tracks = clip.tracks.filter((t) => boneNames.has(splitTrackName(t.name)[0]));
     }
 
+    // Root motion: en los ciclos (walk/run/shoot) se quita la deriva neta; el
+    // salto lo maneja la física (se fija la cadera); las acciones se procesan
+    // más abajo, cuando ya está la escala en metros.
     const rootMotionRemoved: string[] = [];
-    if (this.config.character.stripRootMotion) {
-      for (const clip of this.clips.values()) rootMotionRemoved.push(...stripRootMotion(clip, model, rootBone));
+    for (const [state, clip] of this.clips) {
+      if (isOneShot(state)) continue;
+      if (state === "jump") rootMotionRemoved.push(...flattenRootTranslation(clip, model, rootBone, true));
+      else if (this.config.character.stripRootMotion) rootMotionRemoved.push(...stripRootMotion(clip, model, rootBone));
     }
 
     // ---- Normalización: escala, orientación, apoyo en el suelo --------------
@@ -214,12 +245,29 @@ export class Character {
       if (analysis.speedMeasured) this.runClipSpeed = analysis.speed;
       else warnings.push("No se pudo estimar la velocidad natural del clip de carrera: usando 4 m/s (ajustable en el panel).");
     }
+    const shootClip = this.clips.get("shoot");
+    if (shootClip) {
+      const analysis = analyseWalkClip(this, shootClip, measureTargets, bones);
+      if (analysis.speedMeasured) this.shootClipSpeed = analysis.speed;
+    }
+    // Acciones: el desplazamiento del hueso raíz se mide en metros (espacio del
+    // personaje) y se quita del clip; el controlador lo aplica con colisiones.
+    const rootMotionDistance: CharacterReport["rootMotion"] = {};
+    for (const action of ONE_SHOTS) {
+      const clip = this.clips.get(action);
+      if (!clip || !rootBone) continue;
+      const curve = sampleRootMotion(this, clip, rootBone);
+      this.rootMotion.set(action, curve);
+      const n = curve.x.length - 1;
+      rootMotionDistance[action] = Math.hypot(curve.x[n], curve.z[n]);
+      rootMotionRemoved.push(...flattenRootTranslation(clip, model, rootBone, false));
+    }
     this.applyCalibration();
 
     // ---- Acciones ----------------------------------------------------------------
     this.setupActions(neutralTime);
 
-    const missing = (["idle", "walk", "run", "jump", "fall"] as AnimationStateName[]).filter((s) => !this.clips.has(s));
+    const missing = (["idle", "walk", "run", "jump", "shoot", ...ONE_SHOTS] as AnimationStateName[]).filter((s) => !this.clips.has(s));
     if (missing.includes("idle"))
       warnings.push("No hay clip idle: el reposo usa una pose congelada del clip de caminata. Incorporar un idle (Mixamo) en config.assets.extraAnimations.");
     if (missing.includes("run")) warnings.push("No hay clip de carrera: se acelera la caminata.");
@@ -246,7 +294,9 @@ export class Character {
       groundOffset: this.groundOffset,
       walkClipSpeed: this.walkClipSpeed,
       runClipSpeed: this.runClipSpeed,
+      shootClipSpeed: this.shootClipSpeed,
       neutralPoseTime: neutralTime,
+      rootMotion: rootMotionDistance,
       rootMotionRemoved,
       missingStates: missing,
       warnings,
@@ -270,6 +320,10 @@ export class Character {
 
   get effectiveRunClipSpeed(): number {
     return this.config.character.runClipSpeed > 0 ? this.config.character.runClipSpeed : this.runClipSpeed * this.config.character.scaleMultiplier;
+  }
+
+  get effectiveShootClipSpeed(): number {
+    return this.config.character.shootClipSpeed > 0 ? this.config.character.shootClipSpeed : this.shootClipSpeed * this.config.character.scaleMultiplier;
   }
 
   private setupActions(neutralTime: number): void {
@@ -298,31 +352,89 @@ export class Character {
     }
     const runClip = this.clips.get("run");
     if (runClip) this.run = make(runClip, "run");
+    // Clips cuyo tiempo no corre solo: lo fija update() desde el controlador.
+    const scrubbed = (clip: THREE.AnimationClip, label: string): ActionSlot => {
+      const slot = make(clip, label);
+      slot.action.timeScale = 0;
+      return slot;
+    };
     const jumpClip = this.clips.get("jump");
-    if (jumpClip) {
-      this.jump = make(jumpClip, "jump");
-      this.jump.action.setLoop(THREE.LoopOnce, 1);
-      this.jump.action.clampWhenFinished = true;
-    }
+    if (jumpClip) this.jump = scrubbed(jumpClip, "jump");
     const fallClip = this.clips.get("fall");
     if (fallClip) this.fall = make(fallClip, "fall");
+
+    const shootClip = this.clips.get("shoot");
+    if (shootClip) {
+      this.shoot = make(shootClip, "shoot");
+      const base = idleClip ?? walkClip;
+      if (base) {
+        const aimClip = buildAimClip(base, shootClip, this.model);
+        if (aimClip) this.aim = make(aimClip, "aim");
+      }
+    }
+    for (const action of ONE_SHOTS) {
+      const clip = this.clips.get(action);
+      if (clip) this.oneShots.set(action, scrubbed(clip, action));
+    }
   }
 
-  /**
-   * Avanza la animación según el estado de locomoción.
-   * @param speed velocidad horizontal real del controlador (m/s)
-   */
-  update(dt: number, state: LocomotionState, speed: number): void {
+  private get slots(): ActionSlot[] {
+    return [this.idle, this.walk, this.run, this.jump, this.fall, this.shoot, this.aim, ...this.oneShots.values()].filter(Boolean) as ActionSlot[];
+  }
+
+  /** Avanza la animación según el estado del controlador. */
+  update(dt: number, driver: AnimationDriver): void {
     if (!this.mixer) return;
+    const { state, horizontalSpeed: speed } = driver;
+    const slots = this.slots;
     const targets = new Map<ActionSlot, number>();
-    const slots = [this.idle, this.walk, this.run, this.jump, this.fall].filter(Boolean) as ActionSlot[];
     for (const s of slots) targets.set(s, 0);
 
     const clipSpeed = this.effectiveWalkClipSpeed;
     let label = "";
     const airborne = state === "jump" || state === "fall";
+    const oneShot = isOneShot(state) ? this.oneShots.get(state) : undefined;
 
-    if (state === "idle") {
+    if (oneShot) {
+      // La acción avanza a paso fijo en el controlador: se muestra ese instante.
+      const duration = oneShot.action.getClip().duration;
+      oneShot.action.time = THREE.MathUtils.clamp(driver.actionClipTime, 0, duration - 1e-4);
+      targets.set(oneShot, 1);
+      label = `${state} ${driver.actionClipTime.toFixed(2)} s`;
+    } else if (isOneShot(state)) {
+      if (this.idle) targets.set(this.idle, 1);
+      label = `${state} (falta clip)`;
+    } else if (airborne) {
+      if (state === "fall" && this.fall) {
+        targets.set(this.fall, 1);
+        label = this.fall.label;
+      } else if (this.jump) {
+        // El clip sigue a la física: despegue (vy = +impulso) → 0, apogeo → ½,
+        // aterrizaje a la misma altura → 1. Una caída sin salto arranca en el
+        // apogeo; en caídas largas se frena antes de la pose de aterrizaje.
+        const j = Math.max(0.1, this.config.movement.jumpSpeed);
+        const progress = THREE.MathUtils.clamp((j - driver.velocity.y) / (2 * j), 0, 0.88);
+        this.jump.action.time = progress * this.jump.action.getClip().duration;
+        targets.set(this.jump, 1);
+        label = `${state} ${(progress * 100).toFixed(0)}%`;
+      } else {
+        // Sin clip aéreo: mantener la pose actual congelada.
+        for (const s of slots) targets.set(s, s.weight);
+        if (this.walk) this.walk.action.timeScale = 0;
+        label = `${state} (pose congelada · falta clip)`;
+      }
+    } else if (driver.shooting && (this.shoot || this.aim)) {
+      if (state !== "idle" && speed > 0.3 && this.shoot) {
+        const rate = THREE.MathUtils.clamp(speed / this.effectiveShootClipSpeed, 0.5, 1.8);
+        this.shoot.action.timeScale = rate;
+        targets.set(this.shoot, 1);
+        label = `shoot · corriendo ×${rate.toFixed(2)}`;
+      } else {
+        const slot = this.aim ?? this.shoot!;
+        targets.set(slot, 1);
+        label = "shoot · apuntando";
+      }
+    } else if (state === "idle") {
       if (this.idle) targets.set(this.idle, 1);
       label = this.idle?.label ?? "idle (sin pose)";
     } else if (state === "walk" || (state === "run" && !this.run)) {
@@ -339,17 +451,6 @@ export class Character {
       const rate = THREE.MathUtils.clamp(speed / this.effectiveRunClipSpeed, 0.5, 1.8);
       this.run.action.timeScale = rate;
       label = `run ×${rate.toFixed(2)}`;
-    } else if (airborne) {
-      const slot = state === "jump" ? (this.jump ?? this.fall) : (this.fall ?? this.jump);
-      if (slot) {
-        targets.set(slot, 1);
-        label = slot.label;
-      } else {
-        // Sin clip aéreo: mantener la pose actual congelada.
-        for (const s of slots) targets.set(s, s.weight);
-        if (this.walk) this.walk.action.timeScale = 0;
-        label = `${state} (pose congelada · falta clip)`;
-      }
     }
 
     const fade = Math.max(0.01, this.config.character.crossFade);
@@ -364,6 +465,18 @@ export class Character {
 
     this.mixer.update(dt);
     this.animationLabel = label;
+  }
+
+  /**
+   * Punto aproximado de la boca del arma (el personaje no tiene arma modelada):
+   * la mano derecha adelantada 25 cm hacia donde mira el personaje.
+   */
+  muzzleWorldPosition(target: THREE.Vector3): THREE.Vector3 {
+    const hand = this.model?.getObjectByName("mixamorigRightHand");
+    if (!hand) return target.copy(this.root.position).setY(this.root.position.y + 1.4);
+    hand.getWorldPosition(target);
+    const yaw = this.root.rotation.y;
+    return target.add(new THREE.Vector3(Math.sin(yaw) * 0.25, 0, Math.cos(yaw) * 0.25));
   }
 
   setTransform(position: THREE.Vector3, yaw: number): void {
@@ -637,6 +750,99 @@ function stripRootMotion(clip: THREE.AnimationClip, model: THREE.Object3D, rootB
   return removed;
 }
 
+/**
+ * Fija la traslación del hueso raíz al valor del primer frame: sólo en el plano
+ * horizontal (acciones: el controlador aplica ese desplazamiento) o también en
+ * vertical (salto: la altura la pone la física).
+ */
+function flattenRootTranslation(clip: THREE.AnimationClip, model: THREE.Object3D, rootBone: THREE.Bone | null, vertical: boolean): string[] {
+  if (!rootBone) return [];
+  const track = clip.tracks.find((t) => t.name === `${rootBone.name}.position`);
+  if (!track || track.values.length < 6) return [];
+  model.updateMatrixWorld(true);
+  const parentQuat = new THREE.Quaternion();
+  rootBone.parent?.getWorldQuaternion(parentQuat);
+  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(parentQuat.invert()).normalize();
+  const v = track.values;
+  const d = new THREE.Vector3();
+  let max = 0;
+  for (let i = 3; i < v.length; i += 3) {
+    d.set(v[i] - v[0], v[i + 1] - v[1], v[i + 2] - v[2]);
+    if (!vertical) d.addScaledVector(up, -d.dot(up));
+    max = Math.max(max, d.length());
+    v[i] -= d.x;
+    v[i + 1] -= d.y;
+    v[i + 2] -= d.z;
+  }
+  return max > 1e-4 ? [`${clip.name}: ${track.name} fijado${vertical ? "" : " en horizontal"} (máx. ${max.toFixed(1)} u)`] : [];
+}
+
+/** Trayectoria horizontal del hueso raíz en el espacio del personaje (m, +Z adelante). */
+function sampleRootMotion(character: Character, clip: THREE.AnimationClip, rootBone: THREE.Bone): RootMotionCurve {
+  const { root, mixer } = character;
+  const action = mixer.clipAction(clip);
+  action.play();
+  const n = Math.max(2, Math.ceil(clip.duration * ROOT_MOTION_RATE) + 1);
+  const x = new Float32Array(n);
+  const z = new Float32Array(n);
+  const inv = new THREE.Matrix4();
+  const p = new THREE.Vector3();
+  let x0 = 0;
+  let z0 = 0;
+  for (let i = 0; i < n; i++) {
+    mixer.setTime(Math.min(i / ROOT_MOTION_RATE, clip.duration - 1e-4));
+    root.updateMatrixWorld(true);
+    inv.copy(root.matrixWorld).invert();
+    rootBone.getWorldPosition(p).applyMatrix4(inv);
+    if (i === 0) {
+      x0 = p.x;
+      z0 = p.z;
+    }
+    x[i] = p.x - x0;
+    z[i] = p.z - z0;
+  }
+  action.stop();
+  mixer.setTime(0);
+  return { rate: ROOT_MOTION_RATE, x, z };
+}
+
+/**
+ * Pose de disparo quieto: piernas y cadera de `base` (idle) + torso, brazos y
+ * cabeza del primer frame de `shoot`. La rotación de la columna se corrige por
+ * la diferencia de cadera entre ambos clips para que el torso quede orientado
+ * igual que en el clip de disparo (y no inclinado por la cadera del idle).
+ */
+function buildAimClip(base: THREE.AnimationClip, shoot: THREE.AnimationClip, model: THREE.Object3D): THREE.AnimationClip | null {
+  const spine = model.getObjectByName("mixamorigSpine");
+  const hips = spine?.parent;
+  if (!spine || !hips) return null;
+  const upper = new Set<string>();
+  spine.traverse((o) => upper.add(o.name));
+
+  // createInterpolant existe en KeyframeTrack pero no está en los tipos.
+  const evaluate = (track: THREE.KeyframeTrack, t: number): number[] =>
+    Array.from((track as unknown as { createInterpolant(): THREE.Interpolant }).createInterpolant().evaluate(t) as ArrayLike<number>);
+  const valueAt = (clip: THREE.AnimationClip, name: string, t: number): number[] | null => {
+    const track = clip.tracks.find((tr) => tr.name === name);
+    return track ? evaluate(track, t) : null;
+  };
+  const tracks = base.tracks.filter((t) => !upper.has(splitTrackName(t.name)[0])).map((t) => t.clone());
+  const hipsBase = valueAt(base, `${hips.name}.quaternion`, 0);
+  const hipsShoot = valueAt(shoot, `${hips.name}.quaternion`, 0);
+  for (const t of shoot.tracks) {
+    if (!upper.has(splitTrackName(t.name)[0])) continue;
+    const value = evaluate(t, 0);
+    if (t.name === `${spine.name}.quaternion` && hipsBase && hipsShoot) {
+      const q = new THREE.Quaternion().fromArray(hipsBase).invert();
+      q.multiply(new THREE.Quaternion().fromArray(hipsShoot)).multiply(new THREE.Quaternion().fromArray(value));
+      q.toArray(value);
+    }
+    const Track = t.constructor as new (name: string, times: number[], values: number[]) => THREE.KeyframeTrack;
+    tracks.push(new Track(t.name, [0], value));
+  }
+  return new THREE.AnimationClip(`aim (${shortClipName(base.name)} + ${shortClipName(shoot.name)})`, base.duration, tracks);
+}
+
 function splitTrackName(name: string): [string, string] {
   const i = name.lastIndexOf(".");
   return [name.slice(0, i), name.slice(i + 1)];
@@ -721,7 +927,7 @@ function analyseWalkClip(
   return { groundOffset, speed, speedMeasured, neutralTime };
 }
 
-function createShadowBlob(): THREE.Mesh {
+export function createShadowBlob(): THREE.Mesh {
   const size = 128;
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = size;

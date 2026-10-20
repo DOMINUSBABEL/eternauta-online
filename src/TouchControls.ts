@@ -5,7 +5,8 @@
  *   Inclinación parcial = caminar, al tope = correr.
  * - Resto de la pantalla: arrastrar rota la cámara; pellizcar con dos dedos
  *   acerca / aleja.
- * - Botones: saltar y reiniciar posición.
+ * - Botones: saltar, disparar (mantener), piña, patada, esquivar, reiniciar y
+ *   silenciar (el equivalente táctil de la tecla M).
  *
  * No toca la lógica de juego: alimenta la entrada virtual de InputManager,
  * igual que el teclado y el mouse.
@@ -46,6 +47,7 @@ export class TouchControls {
   /** Punteros que controlan la cámara: id → última posición. */
   private readonly look = new Map<number, { x: number; y: number }>();
   private pinchDistance: number | null = null;
+  private readonly buttons: HTMLButtonElement[];
 
   constructor(
     container: HTMLElement,
@@ -59,27 +61,38 @@ export class TouchControls {
     this.joyKnob = el("div", "touch-joy-knob");
     this.joyBase.append(this.joyKnob);
 
-    const jump = el("button", "touch-btn touch-jump", "SALTAR");
-    const reset = el("button", "touch-btn touch-reset", "↺");
-    reset.setAttribute("aria-label", "Reiniciar posición");
-    jump.setAttribute("aria-label", "Saltar");
-    for (const [button, action] of [
-      [jump, "jump"],
-      [reset, "reset"],
-    ] as const) {
+    const buttons = (
+      [
+        ["touch-jump", "SALTAR", "Saltar", "jump"],
+        ["touch-shoot", "FUEGO", "Disparar (mantener)", "shoot"],
+        ["touch-punch", "PIÑA", "Piña", "punch"],
+        ["touch-kick", "PATADA", "Patada", "kick"],
+        ["touch-dodge", "ESQUIVAR", "Esquivar hacia atrás", "dodge"],
+        ["touch-reset", "↺", "Reiniciar posición", "reset"],
+        ["touch-mute", "♪", "Silenciar / activar el sonido", "toggleMute"],
+      ] as const
+    ).map(([cls, text, label, action]) => {
+      const button = el("button", `touch-btn ${cls}`, text);
+      button.setAttribute("aria-label", label);
       button.addEventListener("pointerdown", (e) => {
         e.preventDefault();
         e.stopPropagation();
         button.classList.add("pressed");
-        this.input.trigger(action);
+        if (action === "shoot") this.input.setVirtualShoot(true);
+        else this.input.trigger(action);
       });
-      const release = () => button.classList.remove("pressed");
+      const release = () => {
+        button.classList.remove("pressed");
+        if (action === "shoot") this.input.setVirtualShoot(false);
+      };
       button.addEventListener("pointerup", release);
       button.addEventListener("pointercancel", release);
       button.addEventListener("pointerleave", release);
-    }
+      return button;
+    });
+    this.buttons = buttons;
 
-    this.root.append(this.joyBase, jump, reset);
+    this.root.append(this.joyBase, ...buttons);
     container.append(this.root);
 
     this.root.addEventListener("pointerdown", this.onDown);
@@ -203,6 +216,8 @@ export class TouchControls {
     this.joyBase.classList.remove("active", "running");
     this.joyKnob.style.transform = "";
     this.input.setVirtualMove(0, 0, false);
+    this.input.setVirtualShoot(false);
+    for (const b of this.buttons) b.classList.remove("pressed");
   }
 
   dispose(): void {

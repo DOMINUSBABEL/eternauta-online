@@ -9,7 +9,7 @@
 
 import * as THREE from "three";
 import type { CollisionSystem } from "./CollisionSystem";
-import type { GameConfig } from "./config";
+import type { GameConfig, OneShotAction } from "./config";
 
 export interface MoveIntent {
   /** Eje local de cámara: x = derecha, y = adelante, en [-1, 1]. */
@@ -17,11 +17,35 @@ export interface MoveIntent {
   moveY: number;
   run: boolean;
   jump: boolean;
+  /** Disparar (se mantiene apretado). */
+  shoot: boolean;
+  /** Acción de un solo disparo pedida en este tick (piña, patada, esquive). */
+  action: OneShotAction | null;
   /** Yaw horizontal de la cámara (rad). Adelante = (sin, 0, cos). */
   cameraYaw: number;
 }
 
-export type LocomotionState = "idle" | "walk" | "run" | "jump" | "fall";
+export type LocomotionState = "idle" | "walk" | "run" | "jump" | "fall" | OneShotAction;
+
+/**
+ * Desplazamiento horizontal del hueso raíz a lo largo de un clip, muestreado a
+ * paso fijo: en metros, espacio local del personaje (+Z adelante, +X izquierda),
+ * relativo al instante 0 del clip. Lo genera Character al cargar.
+ */
+export interface RootMotionCurve {
+  rate: number;
+  x: Float32Array;
+  z: Float32Array;
+}
+
+function sampleCurve(c: RootMotionCurve, t: number, out: { x: number; z: number }): void {
+  const f = Math.max(0, t * c.rate);
+  const i = Math.min(Math.floor(f), c.x.length - 1);
+  const j = Math.min(i + 1, c.x.length - 1);
+  const k = Math.min(1, f - i);
+  out.x = c.x[i] + (c.x[j] - c.x[i]) * k;
+  out.z = c.z[i] + (c.z[j] - c.z[i]) * k;
+}
 
 const COYOTE_TIME = 0.1;
 const JUMP_BUFFER = 0.12;
@@ -47,6 +71,16 @@ export class PlayerController {
   state: LocomotionState = "idle";
   /** Altura del cuerpo para colisiones (se sincroniza con el personaje). */
   height = 1.8;
+  /** Acción en curso (null = locomoción libre). "die" se mantiene hasta reiniciar. */
+  action: OneShotAction | null = null;
+  /** Tiempo del clip de la acción en curso (s, dentro de la ventana de config.actions). */
+  actionClipTime = 0;
+  shooting = false;
+
+  private actionYaw = 0;
+  private readonly rootMotion = new Map<OneShotAction, RootMotionCurve>();
+  private readonly rmFrom = { x: 0, z: 0 };
+  private readonly rmTo = { x: 0, z: 0 };
 
   private coyote = 0;
   /** Parado sobre una superficie más empinada que maxSlopeDeg (se desliza). */
@@ -55,6 +89,8 @@ export class PlayerController {
   private readonly wish = new THREE.Vector3();
   private readonly horizontal = new THREE.Vector3();
   private readonly target = new THREE.Vector3();
+  /** Momento del impacto de una piña o patada (config.actions[x].hit), una vez por golpe. */
+  onMeleeHit?: (action: "punch" | "kick") => void;
   /** Se dispara al reiniciar (R, caída al vacío) para que la cámara se recoloque. */
   onReset?: () => void;
 
@@ -63,6 +99,21 @@ export class PlayerController {
     private readonly collision: CollisionSystem,
   ) {
     this.reset();
+  }
+
+  get dead(): boolean {
+    return this.action === "die";
+  }
+
+  setRootMotion(action: OneShotAction, curve: RootMotionCurve | null): void {
+    if (curve) this.rootMotion.set(action, curve);
+    else this.rootMotion.delete(action);
+  }
+
+  /** Muerte (por ahora sólo de prueba: no hay daño). R revive. */
+  kill(): void {
+    if (this.dead) return;
+    this.startAction("die", this.yaw);
   }
 
   get horizontalSpeed(): number {
@@ -80,6 +131,8 @@ export class PlayerController {
     this.yaw = this.previousYaw = THREE.MathUtils.degToRad(spawnYawDeg);
     this.grounded = ground !== null;
     this.state = "idle";
+    this.action = null;
+    this.shooting = false;
     this.coyote = 0;
     this.jumpBuffer = 0;
     this.onReset?.();
@@ -90,6 +143,18 @@ export class PlayerController {
     this.previousPosition.copy(this.position);
     this.previousYaw = this.yaw;
 
+    // --- Acciones (piña, patada, esquive) -----------------------------------
+    // Sólo desde el suelo; mientras duran anulan la entrada de movimiento.
+    if (intent.action && !this.action && this.grounded && !this.onSteepGround) {
+      this.startAction(intent.action, intent.cameraYaw);
+    }
+    if (this.action) {
+      this.shooting = false;
+      this.updateAction(dt);
+      return;
+    }
+    this.shooting = intent.shoot;
+
     // --- Dirección deseada relativa a la cámara ------------------------------
     const sin = Math.sin(intent.cameraYaw);
     const cos = Math.cos(intent.cameraYaw);
@@ -98,7 +163,8 @@ export class PlayerController {
     const wishLen = Math.min(1, this.wish.length());
     if (wishLen > 1e-4) this.wish.normalize();
 
-    const maxSpeed = intent.run ? m.runSpeed : m.walkSpeed;
+    let maxSpeed = intent.run ? m.runSpeed : m.walkSpeed;
+    if (this.shooting) maxSpeed = Math.min(maxSpeed, m.shootMoveSpeed);
     this.target.copy(this.wish).multiplyScalar(maxSpeed * wishLen);
 
     // --- Aceleración / desaceleración (independiente del frame rate) ---------
@@ -120,6 +186,9 @@ export class PlayerController {
       const targetYaw = Math.atan2(this.wish.x, this.wish.z);
       const t = 1 - Math.exp(-m.turnSpeed * dt);
       this.yaw = lerpAngle(this.yaw, targetYaw, t);
+    } else if (this.shooting) {
+      // Disparando quieto: apuntar hacia donde mira la cámara.
+      this.yaw = lerpAngle(this.yaw, intent.cameraYaw, 1 - Math.exp(-m.turnSpeed * dt));
     }
 
     // --- Salto (con coyote time y buffer de entrada) -------------------------
@@ -137,7 +206,77 @@ export class PlayerController {
       this.velocity.y = Math.max(-m.maxFallSpeed, this.velocity.y - m.gravity * dt);
     }
 
-    // --- Integración + colisiones horizontales -------------------------------
+    this.integrate(dt);
+    if (this.position.y < this.config.world.killY) {
+      this.reset();
+      return;
+    }
+    this.state = this.computeState(intent.run);
+  }
+
+  private startAction(action: OneShotAction, aimYaw: number): void {
+    this.action = action;
+    this.actionClipTime = this.config.actions[action].start;
+    // Golpes y esquive se orientan hacia donde mira la cámara; la muerte no gira.
+    this.actionYaw = action === "die" ? this.yaw : aimYaw;
+    this.velocity.x = 0;
+    this.velocity.z = 0;
+    this.jumpBuffer = 0;
+    this.state = action;
+  }
+
+  /**
+   * Avanza la acción en curso: el desplazamiento del clip (root motion) se
+   * convierte en velocidad para que pase por las mismas colisiones que la
+   * caminata. Al terminar se vuelve a la locomoción (la muerte queda fija).
+   */
+  private updateAction(dt: number): void {
+    const m = this.config.movement;
+    const spec = this.config.actions[this.action!];
+    const from = this.actionClipTime;
+    const to = Math.min(spec.end, from + dt * spec.speed);
+    this.actionClipTime = to;
+    if (spec.hit !== undefined && from < spec.hit && to >= spec.hit && (this.action === "punch" || this.action === "kick")) {
+      this.onMeleeHit?.(this.action);
+    }
+
+    if (this.action !== "die") this.yaw = lerpAngle(this.yaw, this.actionYaw, 1 - Math.exp(-m.turnSpeed * 1.5 * dt));
+    const curve = this.rootMotion.get(this.action!);
+    if (curve && to > from) {
+      sampleCurve(curve, from, this.rmFrom);
+      sampleCurve(curve, to, this.rmTo);
+      const s = this.config.character.scaleMultiplier / dt;
+      const lx = (this.rmTo.x - this.rmFrom.x) * s;
+      const lz = (this.rmTo.z - this.rmFrom.z) * s;
+      // Local (+X izquierda, +Z adelante) → mundo según el yaw actual.
+      const sin = Math.sin(this.yaw);
+      const cos = Math.cos(this.yaw);
+      this.velocity.x = lx * cos + lz * sin;
+      this.velocity.z = -lx * sin + lz * cos;
+    } else {
+      this.velocity.x = 0;
+      this.velocity.z = 0;
+    }
+    if (!this.grounded) this.velocity.y = Math.max(-m.maxFallSpeed, this.velocity.y - m.gravity * dt);
+
+    this.integrate(dt);
+    if (this.position.y < this.config.world.killY) {
+      this.reset();
+      return;
+    }
+    if (this.action === "die") return;
+    // Se cortan si el piso desaparece (esquive al borde de un desnivel).
+    if (to >= spec.end || !this.grounded) {
+      this.action = null;
+      this.velocity.x = 0;
+      this.velocity.z = 0;
+      this.state = this.computeState(false);
+    }
+  }
+
+  /** Integración + colisiones horizontales + detección de suelo. */
+  private integrate(dt: number): void {
+    const m = this.config.movement;
     const wasGrounded = this.grounded;
     const fromX = this.position.x;
     const fromZ = this.position.z;
@@ -164,14 +303,6 @@ export class PlayerController {
       this.grounded = false;
       this.onSteepGround = false;
     }
-
-    // --- Prevención de caídas infinitas --------------------------------------
-    if (this.position.y < this.config.world.killY) {
-      this.reset();
-      return;
-    }
-
-    this.state = this.computeState(intent.run);
   }
 
   /**

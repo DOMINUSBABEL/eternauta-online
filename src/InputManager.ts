@@ -4,14 +4,20 @@
  * - Estado continuo (ejes de movimiento, correr) consultado cada tick.
  * - Acciones de flanco (saltar, reiniciar) que se consumen una sola vez.
  * - Mouse: pointer lock para la cámara; si el puntero no está capturado,
- *   arrastrar con el botón izquierdo también rota la cámara.
+ *   arrastrar con el botón izquierdo también rota la cámara. Con el mouse
+ *   capturado, el botón izquierdo dispara (el derecho queda para apuntar).
  */
 
-export type ActionName = "jump" | "reset" | "toggleDebug";
+export type ActionName = "jump" | "reset" | "toggleDebug" | "toggleMute" | "punch" | "kick" | "dodge" | "die";
 
 const KEY_BINDINGS: Record<string, ActionName> = {
   Space: "jump",
   KeyR: "reset",
+  KeyF: "punch",
+  KeyV: "kick",
+  KeyC: "dodge",
+  KeyK: "die",
+  KeyM: "toggleMute",
   Backquote: "toggleDebug",
   F3: "toggleDebug",
   KeyP: "toggleDebug",
@@ -24,10 +30,13 @@ export class InputManager {
   private mouseDY = 0;
   private wheelDelta = 0;
   private dragging = false;
+  private mouseShoot = false;
+  private mouseAim = false;
   /** Entrada virtual (controles táctiles): eje de movimiento y carrera. */
   private virtualX = 0;
   private virtualY = 0;
   private virtualRun = false;
+  private virtualShoot = false;
   /** Cuando es false se ignora la entrada de juego (p. ej. pantalla inicial). */
   enabled = false;
 
@@ -95,7 +104,21 @@ export class InputManager {
     return this.isDown("ShiftLeft") || this.isDown("ShiftRight") || (this.enabled && this.virtualRun);
   }
 
+  /** Disparar: botón izquierdo con el mouse capturado, Q o el botón táctil. */
+  get shooting(): boolean {
+    return this.enabled && (this.mouseShoot || this.keys.has("KeyQ") || this.virtualShoot);
+  }
+
+  /** Apuntar: botón derecho con el mouse capturado (cámara sobre el hombro). */
+  get aiming(): boolean {
+    return this.enabled && this.mouseAim;
+  }
+
   // --- Entrada virtual (TouchControls) -----------------------------------------
+
+  setVirtualShoot(active: boolean): void {
+    this.virtualShoot = active;
+  }
 
   /** Joystick: x = derecha, y = adelante, magnitud ≤ 1. */
   setVirtualMove(x: number, y: number, run: boolean): void {
@@ -176,10 +199,14 @@ export class InputManager {
   private readonly handleBlur = () => {
     this.keys.clear();
     this.dragging = false;
+    this.mouseShoot = false;
+    this.mouseAim = false;
+    this.virtualShoot = false;
     this.setVirtualMove(0, 0, false);
   };
 
   private readonly handlePointerLockChange = () => {
+    if (!this.pointerLocked) this.mouseShoot = this.mouseAim = false;
     this.onPointerLockChange?.(this.pointerLocked);
   };
 
@@ -194,16 +221,25 @@ export class InputManager {
   private readonly handleMouseDown = (e: MouseEvent) => {
     if (!this.enabled) return;
     if (e.button === 0) {
-      if (!this.pointerLocked) {
-        this.requestPointerLock();
-        this.onDragStart?.();
+      if (this.pointerLocked) {
+        this.mouseShoot = true;
+        return;
       }
+      this.requestPointerLock();
+      this.onDragStart?.();
       this.dragging = true;
+    } else if (e.button === 2 && this.pointerLocked) {
+      this.mouseAim = true;
     }
   };
 
-  private readonly handleMouseUp = () => {
-    this.dragging = false;
+  private readonly handleMouseUp = (e: MouseEvent) => {
+    if (e.button === 0) {
+      this.dragging = false;
+      this.mouseShoot = false;
+    } else if (e.button === 2) {
+      this.mouseAim = false;
+    }
   };
 
   private readonly handleMouseMove = (e: MouseEvent) => {

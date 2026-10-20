@@ -16,3 +16,17 @@ public/assets/player/* 2.png
 # Respaldos de Blender y del exportador
 *.blend1
 assets-src/collider-fixes.json.bak
+
+# FBX fuente de animaciones (27 MB c/u): el juego usa los JSON de
+# public/assets/player/animations (`npm run optimize:assets`).
+assets-src/animations/*.fbx
+
+# GLB original del cascarudo (texturas 4K, 31 MB): el juego usa
+# public/assets/enemies/cascarudo.glb (`npm run prepare:enemy`).
+assets-src/cascarudo.glb
+
+# Modelos 3D (Blender): texturas procedurales regeneradas por props:build y
+# respaldo del layout (las texturas propias van en assets-src/props/textures_custom/)
+assets-src/props/textures/
+assets-src/props/textures_raw/
+assets-src/props/layout.json.bak

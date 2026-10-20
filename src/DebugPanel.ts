@@ -20,6 +20,7 @@ export interface DebugHooks {
   onAddObstacleHere(): void;
   setCollisionDebug(visible: boolean): void;
   setSplatVisible(visible: boolean): void;
+  onPropsChange(): void;
   characterInfo(): Record<string, string | number>;
 }
 
@@ -31,6 +32,7 @@ export interface DebugStats {
   pixelRatio: number;
   resolution: string;
   splats: string;
+  props: string;
   ticks: number;
   memory: string;
 }
@@ -45,6 +47,7 @@ export class DebugPanel {
     pixelRatio: 1,
     resolution: "",
     splats: "",
+    props: "",
     ticks: 0,
     memory: "",
   };
@@ -95,10 +98,25 @@ export class DebugPanel {
     ch.add(c.character, "yOffset", -0.5, 0.5, 0.005).name("offset vertical (m)").onChange(h.onCharacterChange);
     ch.add(c.character, "walkClipSpeed", 0, 4, 0.01).name("vel. clip walk (0=auto)");
     ch.add(c.character, "runClipSpeed", 0, 9, 0.01).name("vel. clip run (0=auto)");
+    ch.add(c.character, "shootClipSpeed", 0, 9, 0.01).name("vel. clip shoot (0=auto)");
     ch.add(c.character, "crossFade", 0.01, 1, 0.01).name("cross-fade (s)");
     ch.add(c.character, "castShadowBlob").name("sombra de contacto");
     const info = ch.addFolder("Info del FBX").close();
     this.infoFolder = info;
+
+    // --- Acciones -----------------------------------------------------------
+    const ac = gui.addFolder("Acciones (ventana del clip)").close();
+    for (const [key, label] of [
+      ["punch", "piña"],
+      ["kick", "patada"],
+      ["dodge", "esquive"],
+      ["die", "muerte"],
+    ] as const) {
+      const f = ac.addFolder(label).close();
+      f.add(c.actions[key], "start", 0, 4, 0.01).name("inicio (s)");
+      f.add(c.actions[key], "end", 0, 4, 0.01).name("fin (s)");
+      f.add(c.actions[key], "speed", 0.25, 3, 0.05).name("velocidad ×");
+    }
 
     // --- Escenario ----------------------------------------------------------
     const env = gui.addFolder("Escenario (SPZ)").close();
@@ -115,6 +133,13 @@ export class DebugPanel {
     env.add(this.view, "splatVisible").name("mostrar splat").onChange((v: boolean) => h.setSplatVisible(v));
     env.add(c.environment, "lod").name("LoD (recargar)");
     env.add(c.environment, "extSplats").name("float32 (recargar)");
+
+    // --- Modelos 3D (Blender) ----------------------------------------------
+    const pr = gui.addFolder("Modelos 3D").close();
+    pr.add(c.props, "visible").name("mostrar modelos").onChange(h.onPropsChange);
+    pr.add(c.props, "carveSplat").name("recortar splat (objetos)").onChange(h.onPropsChange);
+    pr.add(c.props, "showBuildings").name("ver Casa Rosada / Cabildo").onChange(h.onPropsChange);
+    pr.add(c.props, "carveBuildings").name("recortar splat (fachadas)").onChange(h.onPropsChange);
 
     // --- Mundo / colisiones -------------------------------------------------
     const w = gui.addFolder("Suelo y límites").close();
@@ -147,6 +172,7 @@ export class DebugPanel {
     mv.add(c.movement, "airControl", 0, 1, 0.01).name("control aéreo");
     mv.add(c.movement, "gravity", 1, 60, 0.5).name("gravedad");
     mv.add(c.movement, "jumpSpeed", 0, 15, 0.1).name("impulso salto");
+    mv.add(c.movement, "shootMoveSpeed", 0.5, 6, 0.05).name("vel. disparando (m/s)");
     mv.add(c.movement, "turnSpeed", 1, 30, 0.5).name("giro");
     mv.add(c.movement, "radius", 0.1, 1, 0.01).name("radio colisión");
     mv.add(c.movement, "maxSlopeDeg", 10, 80, 1).name("pendiente máx. (°)");

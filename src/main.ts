@@ -16,8 +16,8 @@ function showFatal(message: string): void {
   document.body.append(box);
 }
 
-/** Descarga aproximada del juego publicado (FBX 27,5 MB + SPZ 64,7 MB + extras). */
-const APPROX_DOWNLOAD_MB = 93;
+/** Descarga aproximada del juego publicado (FBX 27,5 MB + SPZ 64,7 MB + modelos 7,9 MB + extras). */
+const APPROX_DOWNLOAD_MB = 102;
 
 /** Celular/tablet sin mouse. */
 function isTouchOnly(): boolean {

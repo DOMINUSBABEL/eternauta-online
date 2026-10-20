@@ -9,7 +9,7 @@ Stack: **Three.js 0.186 · TypeScript 6 · Vite 8 · Spark 2.3 (World Labs)** ·
 lil-gui · three-mesh-bvh. Todo WebGL2, corre directo en Chrome.
 
 **Jugalo:** <https://santisiri.github.io/eternauta-online/> (computadora con
-teclado y mouse, o celular con controles táctiles; descarga ~95 MB).
+teclado y mouse, o celular con controles táctiles; descarga ~104 MB).
 
 ## Inicio rápido
 
@@ -44,7 +44,11 @@ npm run inspect:assets # analiza el SPZ y el FBX desde Node (ver abajo)
 | Rueda | Distancia de cámara |
 | Shift | Correr |
 | Espacio | Saltar |
-| R | Reiniciar posición |
+| Clic izq. (mantener) / Q | Disparar a la mira (cámara sobre el hombro) |
+| Clic der. (mantener) | Apuntar sin disparar |
+| F / V / C | Piña / patada (también dañan cascarudos) / esquivar |
+| R | Reiniciar posición (y revivir) |
+| M | Silenciar / activar el sonido |
 | Esc | Liberar el mouse |
 | P / º / F3 | Panel de calibración y métricas |
 
@@ -57,6 +61,7 @@ una pantalla táctil):
 | Arrastrar en el resto de la pantalla | Rotar cámara |
 | Pellizcar | Distancia de cámara |
 | Botón SALTAR / ↺ | Saltar / reiniciar posición |
+| Botón FUEGO (mantener) | Disparar (con ayuda de apuntado: los blancos son 0,6 m más grandes) |
 
 Al entrar se pide pantalla completa y orientación horizontal (Android; iPhone no
 lo permite). En vertical el FOV se abre hasta 85° para no ver "por un tubo".
@@ -71,6 +76,11 @@ public/assets/
   scene.spz                       # Plaza de Mayo (Marble), 65 MB
   player/*_Walking_withSkin.fbx   # protagonista + caminata (Meshy), 27 MB — modelo base
   player/*_Merged_Animations.fbx  # 16 clips de Meshy, 17 MB — se usa sólo "Running"
+  player/animations/*.json        # clips extraídos (idle, salto, disparo, piña, patada, esquive, muerte)
+  enemies/cascarudo.glb           # cascarudo: malla + rig de 57 huesos, sin clips, 2,8 MB
+  audio/bandoneon-lejos.webm|m4a  # banda sonora "Bandoneón Lejos" (3:19; Opus original + AAC para Safari), 3,2 MB c/u
+assets-src/cascarudo.glb          # original (texturas 4K, 31 MB, fuera del repo)
+assets-src/animations/*.fbx       # un FBX de Meshy por animación (27 MB c/u, fuera del repo)
   player/*_roughness.png, *_metallic.png, ...
 ```
 
@@ -143,8 +153,16 @@ src/
   Hud.ts                título, métricas, pantalla inicial, overlays de grano/viñeta
   DebugPanel.ts         calibración en vivo (lil-gui) + métricas + export de config
   Snowfall.ts           nevada en GPU que acompaña a la cámara
+  EnemySystem.ts        cascarudos: spawn por el mapa, IA a 30 Hz, mordidas, muerte, reaparición
+  CascarudoRig.ts       marcha procedural sobre el rig del cascarudo (trípode, boca, cola, muerte)
+  Combat.ts             disparo hitscan desde la mira, cuerpo a cuerpo, vida del traje
+  CombatHud.ts          mira, marcador de impacto, vida, bajas, daño y cartel de muerte
+  Effects.ts            fogonazo, humo, vainas, trazadoras, hemolinfa, manchas en el suelo, polvo de pisadas
+  Audio.ts              sonido sintetizado y posicional: disparos, chillidos, pisadas, impactos, viento
+  PropSystem.ts         modelos 3D de Blender: instanciado, colisiones y recorte del splat
 scripts/
   inspect-assets.mjs    análisis offline del SPZ y del FBX
+  prepare-enemy.mjs     texturas del GLB del cascarudo 4096 → 1024 px JPEG (`npm run prepare:enemy`)
 ```
 
 Decisiones clave:
@@ -162,16 +180,33 @@ Decisiones clave:
   velocidad real para que los pies no patinen (velocidad natural del clip
   estimada automáticamente: 1,43 m/s).
 
-### Estados de animación y clips faltantes
+### Estados de animación
 
-El FBX sólo trae caminata. No se inventan clips:
+Todos los clips son del mismo rig Meshy/Mixamo (60 huesos) que el modelo base.
 
-| Estado | Hoy | Para mejorarlo |
+| Estado | Clip | Cómo se reproduce |
 |---|---|---|
-| idle | pose congelada del clip walk (instante con los pies más juntos, detectado automáticamente) | **falta un clip idle** |
-| walk | clip `Walking` con cadencia según velocidad | — |
-| run | clip `Running` (FBX fusionado), cadencia según velocidad | — |
-| jump / fall | pose actual congelada en el aire | faltan clips jump/fall |
+| idle | `Idle_7` (8,7 s) | en loop |
+| walk / run | `Walking` / `Running` | cadencia según la velocidad real (sin patinar) |
+| jump / fall | `Jump_Over_Obstacle_2` (0,83 s) | el tiempo del clip lo fija la velocidad vertical: despegue → apogeo → aterrizaje; una caída sin salto arranca en el apogeo. La cadera se fija (la altura la pone la física) |
+| disparar corriendo | `Run_and_Shoot` (0,67 s) | cadencia según velocidad (`movement.shootMoveSpeed` 2,2 m/s) |
+| disparar quieto | piernas de `Idle_7` + torso de `Run_and_Shoot` | pose armada al cargar (`buildAimClip`), mira hacia la cámara |
+| piña | `Boxing_Guard_Prep_Straight_Punch`, ventana 1,25–2,7 s ×1,4 | impacto a 1,88 s → `player.onMeleeHit("punch")` |
+| patada | `Boxing_Guard_Step_Knee_Strike`, ventana 0,15–2,3 s ×1,3 | rodillazo a 0,92 s → `onMeleeHit("kick")` |
+| esquive | `Crouch_and_Step_Back`, ventana 0,25–2,2 s ×1,25 | retrocede 1,9 m |
+| muerte | `dying_backwards` | queda en el piso hasta reiniciar (R) |
+
+Las acciones de un solo disparo (piña, patada, esquive, muerte) las avanza
+`PlayerController` a paso fijo (`actionClipTime`) y la animación sólo muestra
+ese instante: el estado es reproducible en un servidor. El desplazamiento del
+hueso raíz de esos clips se mide al cargar (curva en metros), se quita del clip
+y el controlador lo aplica como velocidad, así el esquive o el paso del
+rodillazo respetan las colisiones. Las ventanas (`start`/`end`/`speed`/`hit`)
+están en `config.actions` y se ajustan en vivo en el panel de debug.
+
+Controles: **clic izq.** (con el mouse capturado) o **Q** dispara, **F** piña,
+**V** patada, **C** esquivar, **K** morir (prueba), **R** reiniciar. En
+celulares: botones FUEGO (mantener), PIÑA, PATADA y ESQUIVAR.
 
 Para sumar clips (Meshy o Mixamo, mismo rig `mixamorig`), agregarlos en
 `config.assets.extraAnimations`; `clip` elige por nombre dentro del FBX:
@@ -256,6 +291,185 @@ Blender también se pueden correr `scripts/blender/collider_setup.py` y
 escribe directamente desde Python: el exportador glTF de Blender, llamado desde
 el temporizador del addon MCP, cerró Blender en una prueba.
 
+### Modelos 3D de la plaza (Blender)
+
+Sobre el splat hay **108 objetos modelados en Blender** (44 assets, ~233 k
+triángulos, 76 llamadas de dibujo, costo de render despreciable; GLB de 7,9 MB): Casa Rosada,
+Cabildo, Pirámide de Mayo con su reja, 6 palmeras, 9 árboles, el colectivo 64,
+3 autos abandonados, 20 faroles (triples, simples y altos), bancos, cajones de
+madera y militares, barreras jersey y rojiblancas, vallas, tachos, bebedero,
+bolardos, kiosco de diarios, boca de subte, reloj, mástil con bandera y 15
+canteros con arbustos nevados.
+
+- **Ubicación sacada del splat.** Las fachadas se midieron por franjas (la Casa
+  Rosada de Marble es curva: sigue esa línea con módulos de 3,7 m), los troncos
+  y faroles con un detector de postes delgados, el resto con la franja de
+  obstáculos de `analyze:props` y vistas del juego con una grilla rotulada. Cada
+  objeto se apoya en el suelo estimado del splat.
+- **Recorte del splat.** Cada asset declara volúmenes (caja/cilindro/esfera) que
+  borran el splat donde ahora hay un modelo (`SplatEdit` de Spark, opacidad 0):
+  no se ve el objeto doble. Los recortes nunca bajan del suelo. Se puede
+  apagar en el panel (P → *Modelos 3D*).
+- **Casa Rosada y Cabildo: invisibles.** Sus fachadas se ven mucho mejor en el
+  splat, así que esos dos modelos sólo aportan colisión (`props.showBuildings:
+  false`, sin recorte). En el panel se pueden mostrar para comparar.
+- **Colisiones.** Cada asset declara primitivas de colisión; `PropSystem` las
+  convierte en triángulos y `CollisionSystem.addStaticGeometry` las fusiona con
+  el collider de Marble en un único BVH.
+- **Instanciado.** `props.glb` trae un objeto por asset en el origen y
+  `layout.json` las instancias: cada (asset, material) es un `InstancedMesh`.
+
+Todo es geometría procedural en Python (`scripts/blender/props/`): `lib.py`
+(constructor sobre bmesh, UV cúbicas a escala real, capas de nieve automáticas
+sobre las caras que miran hacia arriba), `textures.py` (texturas procedurales
+con numpy), `assets_small.py` y `assets_big.py` (los modelos) y `build.py`.
+
+```bash
+npm run props:build    # assets-src/props/layout.json → assets-src/props.blend → public/assets/props/
+npm run props:export   # props.blend editado a mano → layout.json + GLB
+```
+
+Para mover, rotar, escalar o duplicar objetos: abrir `assets-src/props.blend`,
+editar la colección **Instancias** (las mallas de la colección **Biblioteca**
+son compartidas), guardar y correr `npm run props:export`; `layout.json` se
+reescribe con las posiciones nuevas. O editar el JSON a mano (`face: [x, z]`
+orienta el frente del objeto hacia un punto) y correr `npm run props:build`.
+Desde el MCP de Blender, `build.py` sólo arma la escena (no exporta: el
+exportador glTF desde el addon cerró Blender alguna vez):
+
+```python
+p = "/ruta/al/repo/scripts/blender/props/build.py"
+exec(compile(open(p).read(), p, "exec"), {"__file__": p, "__name__": "__main__"})
+```
+
+**Texturas.** Las de `assets-src/props/textures_custom/` (versionadas) tienen
+prioridad sobre las procedurales que el build regenera en
+`assets-src/props/textures/`. Las actuales se generaron con FLUX 1.1 Pro en
+Replicate (~US$ 0,04 c/u) a partir de
+[`assets-src/props/PROMPTS_TEXTURAS.md`](assets-src/props/PROMPTS_TEXTURAS.md):
+
+```bash
+npm run textures:generate                      # las que falten (REPLICATE_API_TOKEN en .env.local)
+node scripts/generate-textures.mjs --dry-run   # prompts y costo, sin llamar a la API
+node scripts/generate-textures.mjs --force --seed=7 tejas   # regenerar una con otra variante
+npm run textures:seamless && npm run props:build
+```
+
+`textures:seamless` (Blender sin interfaz) ecualiza la iluminación, hace
+repetibles los bordes mezclando sólo una franja con la imagen corrida medio
+tile, iguala el color medio al de la procedural (calibrada contra el splat: lo
+que genera FLUX sale más claro y saturado que la plaza) y redimensiona. La chapa
+del colectivo se compone con la chapa blanca oxidada (FLUX insistía en dibujar
+un colectivo entero) y el obelisco usa la procedural. Para usar una textura
+hecha a mano, guardala con el mismo nombre en `textures_custom/`.
+
+### Cascarudos
+
+El GLB del cascarudo (auto-rig "SmartRig", 57 huesos con nombres genéricos)
+no trae animaciones: la locomoción es **procedural** (`CascarudoRig.ts`). Frente
+del modelo = +Z (apéndices bucales), atrás la cola segmentada. Cadenas usadas:
+
+| Parte | Huesos (base de cada cadena) |
+|---|---|
+| Patas izquierdas (delantera, media, trasera) | `Bone_046`, `Bone_056`, `Bone_036` |
+| Patas derechas | `Bone_026`, `Bone_051`, `Bone_041` |
+| Boca | `Bone_006`, `Bone_011`, `Bone_016`, `Bone_021` |
+| Cola · cuerpo · raíz | `Bone_031` · `Bone_001` · `Bone_000` |
+
+- **Marcha en trípode** como una cucaracha real: delantera y trasera de un lado
+  + media del otro se mueven juntas. Cada pata gira en la cadera (avance y
+  elevación) y pliega rodilla y tobillo en el aire. La fase avanza con la
+  distancia recorrida / longitud de paso medida del rig, así las patas no patinan.
+- Rotaciones en espacio del modelo convertidas al local de cada hueso desde la
+  pose de reposo (`padre⁻¹ · Δ · padre · reposo`).
+- Miden **3,6 m** (`enemies.scale` 2,1: el doble que el Eternauta). La marcha
+  escala con el tamaño, así que a la misma velocidad dan pasos lentos y pesados;
+  cada pata que apoya levanta nieve y, cerca, hace temblar la cámara.
+- Extras: mandíbulas que mastican y muerden, cola que ondula, rebote/balanceo del
+  cuerpo, sacudón al recibir balas, y muerte panza arriba con las patas encogidas
+  que patalean y se apagan; a los `corpseTime` s el cadáver se hunde y aparece
+  otro lejos del jugador. Los heridos chorrean y dejan rastro en la nieve.
+- **Amenaza**: al detectarte se paran en dos patas (`alertTime`), mandíbulas
+  abiertas y garras delanteras en alto; antes de cada mordida se vuelven a erguir
+  y caen con todo el peso. La altura de la raíz al erguirse está medida para que
+  las patas medias y traseras sigan apoyadas.
+- IA a paso fijo (30 Hz) sólo contra la malla de colisiones: deambula → alerta →
+  persigue (o directo al recibir un tiro) → muerde (`attackDamage` cada
+  `attackInterval` s) → muere. Al perseguir, cada 0,35 s sondea rumbos alrededor
+  de la dirección al jugador (0°, ±30°, ±60°…) y toma el primero transitable; si
+  en 2 s no se acercó, prueba un rodeo amplio. No sube escalones > 0,45 m ni
+  pendientes > 35° (subidos a un cantero quedarían metidos en los arbustos del
+  splat, que los tapan). El cilindro físico (0,45 × escala) es más chico que el
+  cuerpo visual para que entren entre los canteros. Aparecen al azar por todo el
+  mapa, al nivel del piso de la plaza y a ≥ `spawnMinDistance`.
+- El mapa de metal del caparazón es casi cromo: con el `RoomEnvironment` de la
+  escena se veían plateados, así que usan su propio envMap atenuado (0,08).
+- Todo se ajusta en `config.enemies`, `config.weapon`, `config.player` y
+  `config.effects` (color de la hemolinfa, duración de las manchas, temblor de
+  pisadas, retroceso).
+
+### Efectos de combate (`Effects.ts`)
+
+Sin assets: texturas dibujadas en canvas al iniciar, pools fijos (cero
+asignaciones por disparo) y un draw call por sistema.
+
+- **Partículas por shader** (quads instanciados): miran a la cámara y se
+  *estiran en la dirección de su velocidad en pantalla* (desenfoque de
+  movimiento), así las gotas en vuelo son chorros y las chispas, rayas. Cada
+  ráfaga recibe la altura del suelo bajo el impacto: las gotas que caen dejan
+  manchas, las vainas y esquirlas rebotan.
+- **Disparo**: fogonazo de 1-2 frames con estrella frontal (forma y giro al azar)
+  + llama lateral alineada al cañón + luz cálida breve; chispas de pólvora, humo
+  que se expande y sube, vaina que sale a la derecha y rebota, trazadora de ~4 m
+  a 350 m/s y retroceso de cámara que se recupera solo.
+- **Hemolinfa**: spray de gotas con tamaños sesgados (muchas finas, pocas
+  gruesas) que salen de la herida empujadas por la bala, un chorro denso a
+  presión, niebla pulverizada y esquirlas de caparazón. Al morir, borbotón,
+  esquirlas y un charco que se expande lento bajo el cadáver.
+- **Escenario**: en el suelo, nieve pulverizada, terrones y agujero; en paredes,
+  polvo y chispas.
+- Las manchas (gotas, charcos, agujeros) se proyectan planas sobre el suelo y se
+  desvanecen a los `effects.decalLifetime` s (pool de 320).
+- Ojo con el *winding*: el quad de cada partícula se arma con (perp, eje) y debe
+  ser una rotación, no un reflejo, o queda de espaldas y no se dibuja.
+
+### Sonido (`Audio.ts`)
+
+No hay archivos de audio: al cargar, un `OfflineAudioContext` **sintetiza** 12
+sonidos con 3 a 8 variantes cada uno (~120 ms en total) y el juego sólo
+reproduce buffers. El `AudioContext` se crea con el clic en ENTRAR (política de
+autoplay). `M` silencia.
+
+| Sonido | Cuándo | Cómo se sintetiza |
+|---|---|---|
+| Disparo | cada tiro | chasquido supersónico + estampido que se oscurece + golpe grave + cerrojo + 3 ecos de fachada paneados |
+| Chillido | el cascarudo te detecta y se yergue | 2 sierras + subarmónico con vibrato rápido, saturadas, por 3 formantes móviles + raspado de ruido modulado (estridulación) + grave |
+| Alarido | recibe un balazo (máx. 1 cada 0,7 s por bicho) | la misma voz, corta y aguda |
+| Agonía | muere | alarido que cae a 110 Hz con vibrato que se apaga + gorgoteo de burbujas |
+| Siseo | se yergue para morder | ruido agudo pulsado y creciente, como la cucaracha silbadora de Madagascar |
+| Mordida | cierra las mandíbulas | chasquido + crujido de quitina + chapoteo |
+| Castañeteo | al azar, cerca, deambulando o persiguiendo | clicks de mandíbula que se aceleran + ronroneo grave |
+| Pisada de bestia | cada trípode que apoya | golpe de 75→34 Hz + nieve compactándose (granos) + uña de quitina |
+| Pisada del Eternauta | cada zancada y al caer de un salto | crujido corto de nieve |
+| Impacto | bala en cascarudo / en el escenario | quitina + golpe húmedo + gotas / golpe sordo + esquirlas |
+| Viento | ambiente, en loop | ruido con ráfagas y silbido en cornisas, estéreo, loop sin costura |
+
+- Posicional con HRTF: el oyente es la cámara; las voces de los cascarudos
+  siguen al bicho mientras suenan. Lejos se apagan los agudos (aire, nieve que
+  cae) y crece el envío a la reverb (eco de la plaza: respuesta al impulso
+  generada con reflexiones tempranas y cola de 2,3 s).
+- **Banda sonora**: "Bandoneón Lejos", original del proyecto. Se reproduce en
+  streaming (un `<audio>` conectado al mezclador, sin reverb), con fade-in de
+  6 s al entrar; al terminar quedan `audio.musicPause` s de viento y vuelve a
+  empezar. Se baja durante la carga (sólo el formato que el navegador puede
+  reproducir: WebM/Opus, o AAC en Safari) y se silencia con `M` o al pasar la
+  pestaña a segundo plano. Volumen en `audio.musicVolume`.
+- Máximo 28 voces; si no hay lugar, se corta la más vieja de menor prioridad
+  (las pisadas ceden antes que los disparos o chillidos).
+- Volúmenes en `config.audio`. Para usar grabaciones reales en lugar de la
+  síntesis: `config.assets.audioSamples`, p. ej.
+  `{ gunshot: [asset("assets/audio/fal-1.ogg"), asset("assets/audio/fal-2.ogg")] }`.
+
 ## Calibración
 
 Abrir el panel con **P**. Todo edita `config` en vivo:
@@ -304,13 +518,15 @@ Cada push a `main` compila y publica con GitHub Actions
   npm run optimize:assets
   ```
 
-  (mapas de rugosidad/metalicidad a 1024 px y el clip `Running` extraído del FBX
-  fusionado a `animations/running.json`, 35 KB en lugar de 17 MB).
+  (mapas de rugosidad/metalicidad a 1024 px y los clips extraídos a
+  `animations/*.json`: `Running` del FBX fusionado y los 7 FBX sueltos de
+  `assets-src/animations/` → ~880 KB en total en lugar de ~200 MB. Las pistas
+  constantes se guardan con una sola key).
 - `.env` define `VITE_SITE_URL`, usada por la tarjeta de X/Open Graph
   (`public/og.jpg`, 1200×630). Si publicás un fork, cambiala.
 - En celulares (sin mouse) o con ahorro de datos, el juego avisa el tamaño de la
   descarga y espera confirmación antes de bajar los assets.
-- GitHub Pages tiene un límite flexible de 100 GB/mes (≈1.000 visitas a ~95 MB).
+- GitHub Pages tiene un límite flexible de 100 GB/mes (≈1.000 visitas a ~104 MB).
   Si el tráfico crece, el siguiente paso es servir `scene.spz` y el FBX desde
   Cloudflare R2 (sin costo de egreso) y apuntar `config.assets` ahí.
 
@@ -322,6 +538,9 @@ Cada push a `main` compila y publica con GitHub Actions
 3. Precompilar el LoD a `.rad` para carga instantánea y streaming.
 4. Estado de red: el controlador ya es determinista a paso fijo, base para
    predicción del lado del cliente + servidor autoritativo.
+5. Combate: modelo de arma en la mano (hoy el fogonazo sale 55 cm delante de la
+   mano derecha), grabaciones reales para reemplazar la síntesis (sobre todo el
+   disparo) y oleadas.
 
 ## Licencias
 

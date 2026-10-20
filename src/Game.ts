@@ -4,13 +4,19 @@
  */
 
 import * as THREE from "three";
-import { Character } from "./Character";
+import { Character, createShadowBlob } from "./Character";
+import { AudioSystem } from "./Audio";
 import { CollisionDebugView, CollisionSystem } from "./CollisionSystem";
-import type { GameConfig } from "./config";
+import { Combat } from "./Combat";
+import { CombatHud } from "./CombatHud";
+import type { GameConfig, OneShotAction } from "./config";
 import { DebugPanel } from "./DebugPanel";
+import { Effects } from "./Effects";
+import { EnemySystem } from "./EnemySystem";
 import { Hud } from "./Hud";
 import { InputManager } from "./InputManager";
 import { PlayerController } from "./PlayerController";
+import { PropSystem } from "./PropSystem";
 import { SplatEnvironment } from "./SplatEnvironment";
 import { ThirdPersonCamera } from "./ThirdPersonCamera";
 import { TouchControls, isTouchPrimary } from "./TouchControls";
@@ -25,9 +31,20 @@ export class Game {
   readonly player: PlayerController;
   readonly character: Character;
   readonly environment: SplatEnvironment;
+  /** Modelos 3D de Blender (edificios, monumento, mobiliario) sobre el splat. */
+  readonly props: PropSystem;
   readonly camera: ThirdPersonCamera;
   readonly hud: Hud;
   readonly debug: DebugPanel;
+  readonly enemies: EnemySystem;
+  readonly effects: Effects;
+  readonly combat: Combat;
+  readonly combatHud: CombatHud;
+  readonly audio: AudioSystem;
+  /** Distancia caminada desde la última pisada del Eternauta (m). */
+  private stepDistance = 0;
+  private wasGrounded = true;
+  private readonly muzzle = new THREE.Vector3();
   private readonly collisionView: CollisionDebugView;
   readonly touch: TouchControls;
   /** Controles táctiles activos (celular/tablet, o primer toque en pantalla táctil). */
@@ -40,6 +57,7 @@ export class Game {
   private accumulator = 0;
   private elapsed = 0;
   private pendingJump = false;
+  private pendingAction: OneShotAction | null = null;
   private pointerLockErrorShown = false;
   private readonly renderPos = new THREE.Vector3();
   private frameCount = 0;
@@ -60,6 +78,7 @@ export class Game {
     this.character = new Character(config);
     this.environment = new SplatEnvironment(config, this.world.scene);
     this.environment.activeSplats = () => this.world.spark.activeSplats;
+    this.props = new PropSystem(config);
     this.camera = new ThirdPersonCamera(this.world.camera, config, this.collision);
     this.hud = new Hud(container);
     this.hud.applyEffects(config);
@@ -68,8 +87,57 @@ export class Game {
     this.collision.onMeshChange = (mesh) => this.collisionView.setCollisionMesh(mesh);
 
     this.player.height = config.character.targetHeight * config.character.scaleMultiplier;
-    this.player.onReset = () => this.camera.snapBehind(this.player.position, this.player.yaw);
     this.camera.snapBehind(this.player.position, this.player.yaw);
+
+    // --- Combate: cascarudos, disparos y vida del traje ---------------------------
+    const enemyShadow = createShadowBlob();
+    this.enemies = new EnemySystem(config, this.collision, enemyShadow);
+    this.enemies.envMap = this.world.scene.environment;
+    this.effects = new Effects(config.effects.bloodColor);
+    this.effects.decalLifetime = config.effects.decalLifetime;
+    this.combatHud = new CombatHud(container);
+    this.combat = new Combat(config, this.world.camera, this.collision, this.enemies, this.effects, this.combatHud);
+    this.world.scene.add(this.enemies.group, this.effects.group);
+    this.player.onMeleeHit = (action) => this.combat.melee(action, this.player.position, this.player.yaw);
+    this.combat.onShot = () => {
+      this.camera.kick(THREE.MathUtils.degToRad(config.effects.recoilDeg));
+      this.audio.play("gunshot", { volume: 0.9, rateJitter: 0.03 });
+    };
+    this.combat.onPlayerHurt = (damage) => this.camera.shake(0.3 + damage / 50);
+    // Pisadas de bestias de 3,6 m: nieve que se levanta y el suelo que tiembla cerca.
+    this.enemies.onFootstep = (foot, enemy) => {
+      const s = config.enemies.scale;
+      this.effects.footstep(foot, s);
+      // Un sonido por trípode (las tres patas apoyan juntas).
+      this.audio.play("beastStep", { position: foot, volume: 0.6 }, `e${enemy.id}`, 0.08);
+      const d = foot.distanceTo(this.player.position);
+      this.camera.shake(config.effects.footstepShake * 0.05 * s * Math.max(0, 1 - d / (9 * s)));
+    };
+    this.enemies.onDrip = (point, groundY) => this.effects.drip(point, groundY, config.enemies.scale);
+
+    // --- Sonido -------------------------------------------------------------------
+    this.audio = new AudioSystem(config.audio, config.assets.audioSamples);
+    // Voces de los cascarudos: salen de la cabeza (~2,5 m) y siguen al bicho.
+    const voice = (e: { position: THREE.Vector3 }) => ({ follow: e.position, offsetY: 1.2 * config.enemies.scale });
+    this.enemies.onAlert = (e) => this.audio.play("screech", { ...voice(e), volume: 1 }, `e${e.id}`, 2);
+    this.enemies.onHurt = (e) => this.audio.play("shriek", { ...voice(e), volume: 0.85 }, `e${e.id}`, 0.7);
+    this.enemies.onEnemyKilled = (e) => this.audio.play("deathScreech", { ...voice(e), offsetY: 0.8 * config.enemies.scale, volume: 1 });
+    this.enemies.onWindup = (e) => this.audio.play("hiss", { ...voice(e), volume: 0.8 });
+    this.enemies.onBite = (e) => this.audio.play("bite", { ...voice(e), volume: 1 });
+    this.combat.onEnemyHit = (point) => this.audio.play("hitFlesh", { position: point, volume: 0.8 });
+    this.combat.onWorldHit = (point) => this.audio.play("impact", { position: point, volume: 0.45 });
+    // La cámara no se mete adentro de un cascarudo que esté detrás del jugador.
+    this.camera.extraObstruction = (origin, dir, max) => this.enemies.raycast(origin, dir, max)?.distance ?? null;
+    this.combat.onPlayerKilled = () => {
+      this.player.kill();
+      this.combatHud.setDead(true, this.touchMode ? "TOCÁ ↺ PARA VOLVER" : "APRETÁ R PARA VOLVER");
+    };
+    this.player.onReset = () => {
+      this.camera.snapBehind(this.player.position, this.player.yaw);
+      this.combat.revive();
+      // Reaparecer sin cascarudos encima.
+      if (this.playing) this.enemies.clearArea(this.player.position, this.config.enemies.spawnMinDistance * 0.6);
+    };
 
     this.debug = new DebugPanel(config, {
       onCharacterChange: () => {
@@ -101,6 +169,7 @@ export class Game {
       },
       setCollisionDebug: (v) => (this.collisionView.group.visible = v),
       setSplatVisible: (v) => this.environment.setVisible(v),
+      onPropsChange: () => this.props.applySettings(),
       characterInfo: () => this.characterInfo(),
     });
 
@@ -137,6 +206,9 @@ export class Game {
       )
       .then((report) => {
         this.world.scene.add(this.character.root);
+        for (const action of ["punch", "kick", "dodge", "die"] as const) {
+          this.player.setRootMotion(action, this.character.rootMotion.get(action) ?? null);
+        }
         this.characterReady = true;
         this.debug.refreshInfo();
         this.hud.setLoad("fbx", 1, `listo · ${report.bones} huesos · ${report.clips.length} clip(s)`, "done");
@@ -159,9 +231,25 @@ export class Game {
       this.hud.showError(`No se pudo cargar el escenario (SPZ): ${err.message}`);
     });
 
-    const tasks: Promise<unknown>[] = [characterTask, splatTask];
+    const enemyTask = this.enemies
+      .load()
+      .then((r) => console.info(`[Enemigos] cascarudo listo · ${r.bones} huesos · ${r.triangles} tris`))
+      .catch((err: Error) => {
+        console.error("[Enemigos] error de carga", err);
+        this.hud.showError(`No se pudieron cargar los cascarudos (GLB): ${err.message}`);
+      });
+
+    // El sonido se sintetiza en paralelo; si falla, el juego sigue mudo.
+    this.audio.prepare().catch((err: Error) => console.error("[Audio] error al preparar los sonidos", err));
+
+    const tasks: Promise<unknown>[] = [characterTask, splatTask, enemyTask];
     const meshUrl = this.config.assets.collisionMeshUrl;
     if (meshUrl) tasks.push(this.collision.loadMesh(meshUrl, this.environment.matrix));
+    tasks.push(
+      this.props.load(this.world.scene, this.world.scene.environment).then((geometry) => {
+        if (geometry && this.config.props.collide) this.collision.addStaticGeometry(geometry, "modelos");
+      }),
+    );
 
     await Promise.all(tasks);
     // El suelo puede haber cambiado con la malla de colisiones.
@@ -196,6 +284,10 @@ export class Game {
       this.input.requestPointerLock();
     }
     this.player.reset();
+    this.combatHud.show();
+    // Gesto del usuario (clic en ENTRAR): recién ahora el navegador deja sonar.
+    this.audio.unlock();
+    this.enemies.populate(this.player.position);
   }
 
   /** Pantalla completa + horizontal en móviles (donde el navegador lo permite; iPhone no). */
@@ -232,6 +324,9 @@ export class Game {
       this.camera.handleInput(dx, dy, this.input.consumeWheel());
       if (this.input.consume("reset")) this.player.reset();
       if (this.input.consume("jump")) this.pendingJump = true;
+      for (const action of ["punch", "kick", "dodge"] as const) if (this.input.consume(action)) this.pendingAction = action;
+      if (this.input.consume("die")) this.player.kill();
+      if (this.input.consume("toggleMute")) this.hud.showHint(this.audio.toggleMute() ? "SONIDO APAGADO · M" : "SONIDO ACTIVADO", 1500);
     } else {
       // Pantalla inicial: órbita lenta alrededor del protagonista.
       this.camera.yaw += frameDt * 0.12;
@@ -248,9 +343,12 @@ export class Game {
         moveY: axis.y,
         run: this.input.running,
         jump: this.pendingJump,
+        shoot: this.input.shooting,
+        action: this.pendingAction,
         cameraYaw: this.camera.movementYaw,
       });
       this.pendingJump = false;
+      this.pendingAction = null;
       this.accumulator -= step;
       ticks++;
     }
@@ -262,11 +360,29 @@ export class Game {
     const pos = this.player.interpolatedPosition(alpha, this.renderPos);
     if (this.characterReady) {
       this.character.setTransform(pos, this.player.interpolatedYaw(alpha));
-      this.character.update(frameDt, this.player.state, this.player.horizontalSpeed);
+      this.character.update(frameDt, this.player);
       const ground = this.collision.groundHeight(pos.x, pos.z, pos.y) ?? pos.y;
       this.character.updateShadow(pos, ground);
     }
+    this.camera.aiming = this.playing && !this.player.dead && (this.input.aiming || this.player.shooting);
     this.camera.update(frameDt, pos);
+    if (this.playing) {
+      this.audio.update(this.world.camera);
+      this.playerFootsteps(frameDt, pos);
+      this.creatureChatter(frameDt);
+    }
+    if (this.playing) {
+      this.enemies.update(frameDt, pos, !this.player.dead);
+      if (this.characterReady) this.character.muzzleWorldPosition(this.muzzle);
+      this.combat.update(frameDt, {
+        shooting: this.player.shooting,
+        dead: this.player.dead,
+        player: pos,
+        muzzle: this.muzzle,
+        speed: this.player.horizontalSpeed,
+        touch: this.touchMode,
+      });
+    }
     this.world.followLight(pos);
     this.world.update(this.elapsed);
     this.collisionView.update(pos);
@@ -277,6 +393,31 @@ export class Game {
     if (this.statsTimer > 0.2) {
       this.statsTimer = 0;
       this.updateUi();
+    }
+  }
+
+  /** Pisadas del Eternauta en la nieve: una por zancada, y al caer de un salto. */
+  private playerFootsteps(dt: number, feet: THREE.Vector3): void {
+    const p = this.player;
+    if (p.grounded && !this.wasGrounded) this.audio.play("playerStep", { position: feet, volume: 0.7 });
+    this.wasGrounded = p.grounded;
+    if (!p.grounded || p.dead || (p.state !== "walk" && p.state !== "run")) {
+      this.stepDistance = 0.5; // la primera pisada al arrancar llega enseguida
+      return;
+    }
+    const stride = p.state === "run" ? 1.05 : 0.72;
+    this.stepDistance += p.horizontalSpeed * dt;
+    if (this.stepDistance < stride) return;
+    this.stepDistance -= stride;
+    this.audio.play("playerStep", { position: feet, volume: p.state === "run" ? 0.5 : 0.32 });
+  }
+
+  /** Castañeteo ocasional de los cascarudos cercanos que no están mordiendo. */
+  private creatureChatter(dt: number): void {
+    for (const e of this.enemies.enemies) {
+      if (!e.active || e.distance > 32 || (e.state !== "wander" && e.state !== "chase")) continue;
+      if (Math.random() > dt / 5) continue;
+      this.audio.play("chitter", { follow: e.position, offsetY: 1.2 * this.config.enemies.scale, volume: 0.7 }, `e${e.id}`, 3);
     }
   }
 
@@ -313,6 +454,7 @@ export class Game {
       pixelRatio: +this.world.pixelRatio.toFixed(2),
       resolution: `${canvas.width}×${canvas.height}`,
       splats: `${(this.world.spark.activeSplats / 1e6).toFixed(2)} M activos / ${(env.numSplats / 1e6).toFixed(2)} M (LoD)`,
+      props: this.props.status,
       ticks: this.ticksLastFrame,
       memory: mem ? `${(mem.usedJSHeapSize / 1e6).toFixed(0)} MB JS` : "n/d",
     });
@@ -331,6 +473,8 @@ export class Game {
       "offset suelo": +r.groundOffset.toFixed(4),
       "vel. clip walk (m/s)": +r.walkClipSpeed.toFixed(2),
       "vel. clip run (m/s)": r.missingStates.includes("run") ? "—" : +r.runClipSpeed.toFixed(2),
+      "vel. clip shoot (m/s)": r.missingStates.includes("shoot") ? "—" : +r.shootClipSpeed.toFixed(2),
+      "root motion (m)": Object.entries(r.rootMotion).map(([k, v]) => `${k} ${v!.toFixed(2)}`).join(", ") || "—",
       "pose neutra (s)": +r.neutralPoseTime.toFixed(3),
       huesos: r.bones,
       clips: r.clips.filter((c) => c.assignedTo).map((c) => `${c.name.split("|").pop()}→${c.assignedTo}`).join(", "),
@@ -347,6 +491,10 @@ export class Game {
     this.debug.dispose();
     window.removeEventListener("pointerdown", this.handleFirstTouch);
     this.touch.dispose();
+    this.enemies.dispose();
+    this.effects.dispose();
+    this.audio.dispose();
+    this.combatHud.dispose();
     this.character.dispose();
     this.environment.dispose();
     this.collision.dispose();

@@ -67,7 +67,8 @@ export class Hud {
     const help = el("div", "hud-help");
     this.help = help;
     help.innerHTML =
-      "<b>WASD</b> mover · <b>Shift</b> correr · <b>Espacio</b> saltar · <b>R</b> reiniciar · " +
+      "<b>WASD</b> mover · <b>Shift</b> correr · <b>Espacio</b> saltar · <b>Clic izq./Q</b> disparar · <b>Clic der.</b> apuntar · " +
+      "<b>F</b> piña · <b>V</b> patada · <b>C</b> esquivar · <b>K</b> morir · <b>R</b> reiniciar · <b>M</b> sonido · " +
       "<b>Rueda</b> distancia · <b>Esc</b> liberar mouse · <b>P</b> panel debug";
 
     this.hint = el("div", "hud-hint");
@@ -127,7 +128,8 @@ export class Hud {
   setTouchHelp(): void {
     const html =
       "<b>Joystick izquierdo</b> mover (al tope: correr) · <b>Arrastrar</b> cámara · " +
-      "<b>Pellizcar</b> zoom · <b>SALTAR</b> · <b>↺</b> reiniciar";
+      "<b>Pellizcar</b> zoom · <b>SALTAR</b> · <b>FUEGO</b> (mantener) · <b>PIÑA</b> · <b>PATADA</b> · " +
+      "<b>ESQUIVAR</b> · <b>↺</b> reiniciar";
     this.keys.innerHTML = html;
     this.help.innerHTML = html;
     document.body.classList.add("touch");

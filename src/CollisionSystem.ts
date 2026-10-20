@@ -155,7 +155,30 @@ export class MeshCollision implements CollisionProvider {
   private constructor(geometry: THREE.BufferGeometry, url: string) {
     this.geometry = geometry;
     this.bvh = new MeshBVH(geometry);
-    this.name = `malla (${url.split("/").pop()}, ${(geometry.index ? geometry.index.count : geometry.attributes.position.count) / 3} tris)`;
+    this.label = url.split("/").pop() ?? url;
+    this.name = `malla (${this.label}, ${(geometry.index ? geometry.index.count : geometry.attributes.position.count) / 3} tris)`;
+  }
+
+  private readonly label: string;
+
+  /**
+   * Nueva malla con geometría estática extra (en coordenadas del mundo), p. ej.
+   * las colisiones de los modelos de Blender. Sólo posiciones, indexada.
+   */
+  withExtra(extraWorld: THREE.BufferGeometry, label: string): MeshCollision {
+    const extra = new THREE.BufferGeometry();
+    extra.setAttribute("position", extraWorld.attributes.position.clone());
+    if (extraWorld.index) extra.setIndex(extraWorld.index.clone());
+    extra.applyMatrix4(this.inverse);
+    const parts = [this.geometry, extra];
+    const mixed = parts.some((g) => g.index) && parts.some((g) => !g.index);
+    const merged = mergeGeometries(mixed ? parts.map((g) => (g.index ? g.toNonIndexed() : g)) : parts, false);
+    extra.dispose();
+    if (!merged) throw new Error("No se pudo fusionar la geometría extra con la malla de colisión");
+    const mc = new MeshCollision(merged, `${this.label} + ${label}`);
+    mc.setTransform(this.matrix);
+    mc.stepHeight = this.stepHeight;
+    return mc;
   }
 
   static async load(url: string, onProgress?: (p: number) => void): Promise<MeshCollision> {
@@ -284,6 +307,26 @@ export class CollisionSystem {
     return this.mesh ?? this.provisional;
   }
 
+  /** Geometría estática extra (mundo) que se suma a la malla real: colisiones de los props. */
+  private extra: { geometry: THREE.BufferGeometry; label: string } | null = null;
+
+  /** Agrega (o reemplaza) colisiones estáticas extra; se fusionan con la malla de Marble. */
+  addStaticGeometry(geometry: THREE.BufferGeometry, label: string): void {
+    this.extra?.geometry.dispose();
+    this.extra = { geometry, label };
+    if (this.base) this.setMesh(this.base.withExtra(geometry, label));
+  }
+
+  /** Malla de Marble sin extras (para poder recombinar). */
+  private base: MeshCollision | null = null;
+
+  private setMesh(mesh: MeshCollision): void {
+    if (this.mesh && this.mesh !== this.base) this.mesh.dispose();
+    this.mesh = mesh;
+    this.status = mesh.name;
+    this.onMeshChange?.(mesh);
+  }
+
   /** Carga una malla de colisiones real; si falla, se mantiene la provisional y se informa. */
   async loadMesh(url: string, environmentMatrix: THREE.Matrix4): Promise<void> {
     this.status = "cargando malla…";
@@ -291,6 +334,11 @@ export class CollisionSystem {
       const mesh = await MeshCollision.load(url);
       mesh.setTransform(environmentMatrix);
       this.mesh?.dispose();
+      this.base = mesh;
+      if (this.extra) {
+        this.setMesh(mesh.withExtra(this.extra.geometry, this.extra.label));
+        return;
+      }
       this.mesh = mesh;
       this.status = mesh.name;
       this.onMeshChange?.(mesh);
@@ -301,6 +349,7 @@ export class CollisionSystem {
   }
 
   updateEnvironmentTransform(matrix: THREE.Matrix4): void {
+    this.base?.setTransform(matrix);
     this.mesh?.setTransform(matrix);
     this.onMeshChange?.(this.mesh);
   }
@@ -337,7 +386,9 @@ export class CollisionSystem {
   }
 
   dispose(): void {
+    if (this.base && this.base !== this.mesh) this.base.dispose();
     this.mesh?.dispose();
+    this.extra?.geometry.dispose();
   }
 }
 

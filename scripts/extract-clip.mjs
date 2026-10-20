@@ -64,6 +64,18 @@ clip.tracks = clip.tracks.filter((t) => {
   return false;
 });
 
+// El resto de las pistas constantes (huesos que no se mueven: dedos, posiciones
+// de huesos hijos) se reducen a una sola key: mismo resultado, ~5× menos JSON.
+let collapsed = 0;
+clip.tracks = clip.tracks.map((t) => {
+  const size = t.getValueSize();
+  const v = t.values;
+  for (let i = size; i < v.length; i++) if (Math.abs(v[i] - v[i % size]) > 1e-6) return t;
+  if (t.times.length === 1) return t;
+  collapsed++;
+  return new t.constructor(t.name, [t.times[0]], Array.from(v.slice(0, size)));
+});
+
 const json = THREE.AnimationClip.toJSON(clip);
 json.name = short(clip.name);
 // Redondeo a 5 decimales: suficiente para rotaciones/posiciones y ~3× más chico.
@@ -78,5 +90,5 @@ mkdirSync(dirname(out), { recursive: true });
 const text = JSON.stringify(json);
 writeFileSync(out, text);
 console.log(
-  `"${json.name}": ${clip.duration.toFixed(3)} s, ${json.tracks.length} pistas, ${animated} huesos animados → ${outArg} (${(text.length / 1024).toFixed(0)} KB)`,
+  `"${json.name}": ${clip.duration.toFixed(3)} s, ${json.tracks.length} pistas, ${animated} huesos animados, ${collapsed} constantes →${outArg} (${(text.length / 1024).toFixed(0)} KB)`,
 );

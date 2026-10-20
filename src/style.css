@@ -497,6 +497,7 @@ body.touch .start {
   background: var(--snow);
 }
 
+/* Botonera en arco alrededor de SALTAR (abajo a la derecha). */
 .touch-jump {
   right: calc(28px + env(safe-area-inset-right));
   bottom: calc(34px + env(safe-area-inset-bottom));
@@ -505,17 +506,67 @@ body.touch .start {
   font-size: 13px;
 }
 
-.touch-reset {
-  right: calc(122px + env(safe-area-inset-right));
+.touch-shoot {
+  right: calc(36px + env(safe-area-inset-right));
+  bottom: calc(140px + env(safe-area-inset-bottom));
+  width: 68px;
+  height: 68px;
+  font-size: 11px;
+  border-color: rgba(255, 196, 140, 0.7);
+}
+
+.touch-punch {
+  right: calc(134px + env(safe-area-inset-right));
+  bottom: calc(46px + env(safe-area-inset-bottom));
+  width: 60px;
+  height: 60px;
+  font-size: 11px;
+}
+
+.touch-kick {
+  right: calc(116px + env(safe-area-inset-right));
+  bottom: calc(122px + env(safe-area-inset-bottom));
+  width: 56px;
+  height: 56px;
+  font-size: 9px;
+}
+
+.touch-dodge {
+  right: calc(208px + env(safe-area-inset-right));
   bottom: calc(40px + env(safe-area-inset-bottom));
-  width: 48px;
-  height: 48px;
-  font-size: 22px;
+  width: 54px;
+  height: 54px;
+  font-size: 7.5px;
+  letter-spacing: 0.06em;
+}
+
+.touch-reset {
+  right: calc(46px + env(safe-area-inset-right));
+  bottom: calc(222px + env(safe-area-inset-bottom));
+  width: 44px;
+  height: 44px;
+  font-size: 20px;
   font-weight: 600;
 }
 
-/* HUD compacto en pantallas táctiles. */
-body.touch .hud-help {
+.touch-mute {
+  top: calc(12px + env(safe-area-inset-top));
+  right: calc(16px + env(safe-area-inset-right));
+  width: 40px;
+  height: 40px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.touch-mute.pressed {
+  color: var(--snow);
+  background: rgba(11, 12, 14, 0.38);
+}
+
+/* HUD compacto en pantallas táctiles: las métricas pisan la barra del traje
+   (siguen en el panel de debug). */
+body.touch .hud-help,
+body.touch .hud-metrics {
   display: none;
 }
 
@@ -581,6 +632,197 @@ body.touch .hud-hint {
   }
   .start-keys {
     margin-top: 12px;
+    font-size: 10px;
+  }
+}
+
+/* ---------------------------------------------------------------- Combate --- */
+
+.hud-combat {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* Mira: cuatro trazos finos con un hueco al centro. */
+.hud-combat-crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  transform: translate(-50%, -50%);
+  background:
+    linear-gradient(var(--snow), var(--snow)) center top / 2px 7px no-repeat,
+    linear-gradient(var(--snow), var(--snow)) center bottom / 2px 7px no-repeat,
+    linear-gradient(var(--snow), var(--snow)) left center / 7px 2px no-repeat,
+    linear-gradient(var(--snow), var(--snow)) right center / 7px 2px no-repeat;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9));
+  opacity: 0.85;
+}
+
+.hud-combat-hit {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 30px;
+  height: 30px;
+  transform: translate(-50%, -50%) rotate(45deg);
+  background:
+    linear-gradient(currentColor, currentColor) center top / 2px 9px no-repeat,
+    linear-gradient(currentColor, currentColor) center bottom / 2px 9px no-repeat,
+    linear-gradient(currentColor, currentColor) left center / 9px 2px no-repeat,
+    linear-gradient(currentColor, currentColor) right center / 9px 2px no-repeat;
+  color: var(--snow);
+  opacity: 0;
+}
+
+.hud-combat-hit.visible {
+  opacity: 1;
+}
+
+.hud-combat-hit.kill {
+  color: var(--signal);
+  width: 38px;
+  height: 38px;
+}
+
+.hud-combat-status {
+  position: absolute;
+  left: 50%;
+  top: calc(18px + env(safe-area-inset-top));
+  transform: translateX(-50%);
+  display: grid;
+  grid-template-columns: auto 180px auto;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 8px 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ash);
+  background: var(--ink-soft);
+}
+
+.hud-combat-label {
+  color: var(--snow);
+  font-weight: 600;
+}
+
+.hud-combat-health {
+  height: 6px;
+  background: rgba(233, 237, 240, 0.15);
+  overflow: hidden;
+}
+
+.hud-combat-health-bar {
+  height: 100%;
+  background: var(--frost);
+  transform-origin: left center;
+  transition: transform 0.15s linear;
+}
+
+.hud-combat.low .hud-combat-health-bar {
+  background: var(--signal);
+  animation: hud-combat-pulse 0.8s ease-in-out infinite alternate;
+}
+
+.hud-combat-health-value {
+  min-width: 3ch;
+  text-align: right;
+  color: var(--snow);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-combat-counters {
+  grid-column: 1 / -1;
+  text-align: center;
+  font-size: 10px;
+}
+
+.hud-combat-counters span {
+  color: var(--snow);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Flash de daño en los bordes + flecha hacia el cascarudo que muerde. */
+.hud-combat-damage {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 45%, rgba(170, 30, 20, 0.55) 100%);
+  opacity: 0;
+}
+
+.hud-combat-arrow {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transform: rotate(var(--angle, 0rad)) translateY(-120px);
+  border-left: 14px solid transparent;
+  border-right: 14px solid transparent;
+  border-bottom: 20px solid rgba(216, 87, 60, 0.9);
+  margin-left: -14px;
+  opacity: 0;
+}
+
+.hud-combat-damage.visible,
+.hud-combat-arrow.visible {
+  animation: hud-combat-fade 0.9s ease-out forwards;
+}
+
+.hud-combat-death {
+  position: absolute;
+  left: 50%;
+  top: 38%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  opacity: 0;
+  transition: opacity 0.6s 0.8s;
+}
+
+.hud-combat-death.visible {
+  opacity: 1;
+}
+
+.hud-combat-death-title {
+  margin: 0;
+  font-size: clamp(22px, 4vw, 44px);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--snow);
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.8);
+}
+
+.hud-combat-death-sub {
+  margin: 10px 0 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  color: var(--snow);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.9);
+}
+
+@keyframes hud-combat-fade {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes hud-combat-pulse {
+  to {
+    opacity: 0.55;
+  }
+}
+
+@media (max-width: 600px) {
+  .hud-combat-status {
+    grid-template-columns: auto 110px auto;
     font-size: 10px;
   }
 }
