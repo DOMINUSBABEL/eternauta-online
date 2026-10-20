@@ -30,3 +30,6 @@ assets-src/cascarudo.glb
 assets-src/props/textures/
 assets-src/props/textures_raw/
 assets-src/props/layout.json.bak
+
+# Caché de Python de los scripts de Blender
+__pycache__/
